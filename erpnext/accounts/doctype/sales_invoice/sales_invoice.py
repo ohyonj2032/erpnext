@@ -2485,14 +2485,6 @@ def update_linked_doc(doctype, name, inter_company_reference):
 		frappe.db.set_value(doctype, inter_company_reference, ref_field, name)
 
 
-def unlink_inter_company_doc(doctype, name, inter_company_reference):
-	if doctype in ["Sales Invoice", "Purchase Invoice"]:
-		ref_doc = "Purchase Invoice" if doctype == "Sales Invoice" else "Sales Invoice"
-		ref_field = "inter_company_invoice_reference"
-	else:
-		ref_doc = "Purchase Order" if doctype == "Sales Order" else "Sales Order"
-		ref_field = "inter_company_order_reference"
-
 	if inter_company_reference:
 		frappe.db.set_value(doctype, name, ref_field, "")
 		frappe.db.set_value(ref_doc, inter_company_reference, ref_field, "")

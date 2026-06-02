@@ -19,6 +19,8 @@ from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, n
 from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
 	unlink_inter_company_doc,
 	update_linked_doc,
+	unlink_inter_company_doc,
+	update_linked_doc,
 	validate_inter_company_party,
 )
 from erpnext.accounts.party import get_party_account
@@ -517,8 +519,6 @@ class SalesOrder(SellingController):
 		self.update_project()
 		self.update_prevdoc_status("submit")
 
-		self.update_blanket_order()
-
 		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
 		if self.coupon_code:
 			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
@@ -527,6 +527,8 @@ class SalesOrder(SellingController):
 
 		if self.get("reserve_stock") and not self.get("is_subcontracted"):
 			self.create_stock_reservation_entries()
+
+		self.update_blanket_order()
 
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]

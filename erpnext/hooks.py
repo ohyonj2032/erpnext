@@ -383,18 +383,6 @@ doc_events = {
 	"Event": {
 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
 	},
-	"Sales Invoice": {
-		"on_submit": [
-			"erpnext.regional.italy.utils.sales_invoice_on_submit",
-		],
-		"on_cancel": [
-			"erpnext.regional.italy.utils.sales_invoice_on_cancel",
-		],
-		"on_trash": "erpnext.regional.check_deletion_permission",
-	},
-	"Purchase Invoice": {
-		"validate": [
-			"erpnext.regional.united_arab_emirates.utils.update_grand_total_for_rcm",
 			"erpnext.regional.united_arab_emirates.utils.validate_returns",
 		]
 	},

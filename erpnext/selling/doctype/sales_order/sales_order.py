@@ -2271,3 +2271,21 @@ def get_mapped_subcontracting_inward_order(source_name, target_doc=None):
 	)
 
 	return target_doc
+
+
+@frappe.whitelist()
+def make_stock_appointment(source_name: str, target_doc: str | Document | None = None):
+	"""
+	从销售订单创建库存预约
+	"""
+	from erpnext.booking.utils import create_appointment_from_sales_order
+	return create_appointment_from_sales_order(source_name, target_doc)
+
+
+@frappe.whitelist()
+def get_linked_appointments(sales_order: str):
+	"""
+	获取与销售订单关联的所有预约
+	"""
+	from erpnext.booking.utils import get_appointments_by_sales_order
+	return get_appointments_by_sales_order(sales_order)

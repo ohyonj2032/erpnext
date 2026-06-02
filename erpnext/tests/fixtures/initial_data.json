@@ -1,0 +1,85 @@
+{
+  "test_setup": {
+    "description": "Initial test data for order and inventory concurrency testing",
+    "created_date": "2024-01-01"
+  },
+  "item": {
+    "doctype": "Item",
+    "data": [
+      {
+        "name": "_Test_Concurrency_Item",
+        "item_code": "_Test_Concurrency_Item",
+        "item_name": "Test Concurrency Item",
+        "item_group": "All Item Groups",
+        "is_stock_item": 1,
+        "valuation_method": "FIFO",
+        "standard_rate": 100.0
+      }
+    ]
+  },
+  "warehouse": {
+    "doctype": "Warehouse",
+    "data": [
+      {
+        "name": "_Test Warehouse - _TC",
+        "warehouse_name": "_Test Warehouse",
+        "company": "_Test Company"
+      }
+    ]
+  },
+  "customer": {
+    "doctype": "Customer",
+    "data": [
+      {
+        "name": "_Test Customer",
+        "customer_name": "_Test Customer",
+        "customer_type": "Individual",
+        "customer_group": "All Customer Groups",
+        "territory": "All Territories"
+      }
+    ]
+  },
+  "company": {
+    "doctype": "Company",
+    "data": [
+      {
+        "name": "_Test Company",
+        "company_name": "_Test Company",
+        "default_currency": "USD"
+      }
+    ]
+  },
+  "sales_order": {
+    "doctype": "Sales Order",
+    "data": [
+      {
+        "name": "_Test_Concurrency_Order",
+        "customer": "_Test Customer",
+        "delivery_date": "2024-01-15",
+        "company": "_Test Company",
+        "status": "To Deliver and Bill",
+        "items": [
+          {
+            "item_code": "_Test_Concurrency_Item",
+            "qty": 10.0,
+            "rate": 100.0,
+            "warehouse": "_Test Warehouse - _TC",
+            "amount": 1000.0
+          }
+        ]
+      }
+    ]
+  },
+  "bin": {
+    "doctype": "Bin",
+    "data": [
+      {
+        "item_code": "_Test_Concurrency_Item",
+        "warehouse": "_Test Warehouse - _TC",
+        "actual_qty": 100.0,
+        "projected_qty": 100.0,
+        "version": 0
+      }
+    ]
+  }
+}

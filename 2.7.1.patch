@@ -1,0 +1,24 @@
+diff --git a/erpnext/stock/doctype/bin/bin.py b/erpnext/stock/doctype/bin/bin.py
+index b7393b49cb..f4c8b6c695 100644
+--- a/erpnext/stock/doctype/bin/bin.py
++++ b/erpnext/stock/doctype/bin/bin.py
+@@ -33,6 +33,7 @@ class Bin(Document):
+ 		stock_uom: DF.Link | None
+ 		stock_value: DF.Float
+ 		valuation_rate: DF.Float
++		version: DF.Int
+ 		warehouse: DF.Link
+ 	# end: auto-generated types
+ 
+@@ -62,6 +63,11 @@ class Bin(Document):
+ 		if self.get("__islocal") or not self.stock_uom:
+ 			self.stock_uom = frappe.get_cached_value("Item", self.item_code, "stock_uom")
+ 		self.set_projected_qty()
++	
++	def before_update(self):
++		# Increment version on every update for optimistic locking
++		if self.has_value_changed("actual_qty") or self.has_value_changed("projected_qty"):
++			self.version = (self.version or 0) + 1
+ 
+ 	def set_projected_qty(self):
+ 		self.projected_qty = (

@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "autoname": "format:APQ-LOG-{#####}",
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "from_status",
+  "to_status",
+  "col_br_1",
+  "changed_by",
+  "changed_at",
+  "reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "from_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "From Status"
+  },
+  {
+   "fieldname": "to_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "To Status",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_br_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "changed_by",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Changed By"
+  },
+  {
+   "fieldname": "changed_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Changed At"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason"
+  }
+ ],
+ "indexes": [],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Selling",
+ "name": "Appointment Queue Status Log",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

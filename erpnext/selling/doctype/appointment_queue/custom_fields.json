@@ -1,0 +1,14 @@
+[
+ {
+  "doctype": "Custom Field",
+  "dt": "Sales Order",
+  "fieldname": "appointment_queue",
+  "fieldtype": "Link",
+  "label": "Appointment Queue",
+  "options": "Appointment Queue",
+  "insert_after": "amended_from",
+  "read_only": 1,
+  "allow_on_submit": 1,
+  "search_index": 1
+ }
+]

@@ -383,6 +383,11 @@ doc_events = {
 	"Event": {
 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
 	},
+	"Sales Order": {
+		"validate": "erpnext.selling.doctype.appointment_queue.sales_order_integration.validate_sales_order_in_queue",
+		"on_submit": "erpnext.selling.doctype.appointment_queue.sales_order_integration.on_submit_sales_order",
+		"on_cancel": "erpnext.selling.doctype.appointment_queue.sales_order_integration.on_cancel_sales_order",
+	},
 	"Sales Invoice": {
 		"on_submit": [
 			"erpnext.regional.italy.utils.sales_invoice_on_submit",
@@ -501,6 +506,7 @@ scheduler_events = {
 		"erpnext.manufacturing.doctype.bom_update_tool.bom_update_tool.auto_update_latest_price_in_all_boms",
 		"erpnext.crm.utils.open_leads_opportunities_based_on_todays_event",
 		"erpnext.assets.doctype.asset.depreciation.post_depreciation_entries",
+		"erpnext.selling.doctype.appointment_queue.appointment_queue.release_timeout_queues",
 	],
 	"weekly": [
 		"erpnext.accounts.utils.auto_create_exchange_rate_revaluation_weekly",
@@ -536,6 +542,21 @@ communication_doctypes = ["Customer", "Supplier"]
 
 advance_payment_receivable_doctypes = ["Sales Order"]
 advance_payment_payable_doctypes = ["Purchase Order"]
+
+custom_fields = {
+	"Sales Order": [
+		{
+			"fieldname": "appointment_queue",
+			"fieldtype": "Link",
+			"label": "Appointment Queue",
+			"options": "Appointment Queue",
+			"insert_after": "amended_from",
+			"read_only": 1,
+			"allow_on_submit": 1,
+			"search_index": 1,
+		}
+	],
+}
 
 invoice_doctypes = ["Sales Invoice", "Purchase Invoice"]
 

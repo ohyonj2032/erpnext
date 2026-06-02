@@ -1,0 +1,290 @@
+{
+ "actions": [],
+ "autoname": "format:APQ-{YYYY}-{MM}-{#####}",
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "queue_section",
+  "queue_number",
+  "customer",
+  "customer_name",
+  "contact_phone",
+  "contact_email",
+  "col_br_1",
+  "scheduled_date",
+  "scheduled_time_slot",
+  "priority",
+  "status",
+  "service_section",
+  "item_code",
+  "item_name",
+  "warehouse",
+  "col_br_2",
+  "service_qty",
+  "stock_uom",
+  "sales_order",
+  "reservation_entry",
+  "status_tracking_section",
+  "status_log",
+  "section_break_ext",
+  "extension_data",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "queue_section",
+   "fieldtype": "Section Break",
+   "label": "Queue Information"
+  },
+  {
+   "fieldname": "queue_number",
+   "fieldtype": "Data",
+   "label": "Queue Number",
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Read Only",
+   "label": "Customer Name",
+   "fetch_from": "customer.customer_name"
+  },
+  {
+   "fieldname": "contact_phone",
+   "fieldtype": "Data",
+   "label": "Contact Phone"
+  },
+  {
+   "fieldname": "contact_email",
+   "fieldtype": "Data",
+   "label": "Contact Email"
+  },
+  {
+   "fieldname": "col_br_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "scheduled_date",
+   "fieldtype": "Date",
+   "label": "Scheduled Date",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "scheduled_time_slot",
+   "fieldtype": "Data",
+   "label": "Scheduled Time Slot",
+   "description": "e.g. 09:00-10:00"
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Low\nMedium\nHigh\nUrgent",
+   "default": "Medium"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nQueued\nProcessing\nCompleted\nCancelled\nTimeout\nRescheduled",
+   "default": "Draft",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "service_section",
+   "fieldtype": "Section Break",
+   "label": "Service Details"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Read Only",
+   "label": "Item Name",
+   "fetch_from": "item_code.item_name"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_br_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "service_qty",
+   "fieldtype": "Float",
+   "label": "Service Qty",
+   "reqd": 1,
+   "default": 1
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "Stock UOM",
+   "options": "UOM",
+   "fetch_from": "item_code.stock_uom",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reservation_entry",
+   "fieldtype": "Link",
+   "label": "Stock Reservation Entry",
+   "options": "Stock Reservation Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status_tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Status Tracking"
+  },
+  {
+   "fieldname": "status_log",
+   "fieldtype": "Table",
+   "label": "Status Log",
+   "options": "Appointment Queue Status Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_ext",
+   "fieldtype": "Section Break",
+   "label": "Extension Data"
+  },
+  {
+   "fieldname": "extension_data",
+   "fieldtype": "JSON",
+   "label": "Extension Data",
+   "description": "Store strategy-specific metadata (cancel reason, reschedule target, timeout config, etc.)"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Long Text",
+   "label": "Notes"
+  }
+ ],
+ "links": [
+  {
+   "group": "Logs",
+   "link_doctype": "Appointment Queue Status Log",
+   "link_fieldname": "parent"
+  }
+ ],
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Selling",
+ "name": "Appointment Queue",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 0,
+   "read": 1,
+   "report": 1,
+   "role": "Stock User",
+   "share": 0,
+   "write": 0
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [
+  {
+   "color": "Blue",
+   "title": "Queued"
+  },
+  {
+   "color": "Orange",
+   "title": "Processing"
+  },
+  {
+   "color": "Green",
+   "title": "Completed"
+  },
+  {
+   "color": "Red",
+   "title": "Cancelled"
+  },
+  {
+   "color": "Gray",
+   "title": "Draft"
+  },
+  {
+   "color": "Purple",
+   "title": "Timeout"
+  },
+  {
+   "color": "Yellow",
+   "title": "Rescheduled"
+  }
+ ],
+ "track_changes": 1
+}

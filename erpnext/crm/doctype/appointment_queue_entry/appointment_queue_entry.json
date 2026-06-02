@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "autoname": "CRM-APP-QUEUE-.YYYY.-.####",
+ "creation": "2024-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "appointment_queue",
+  "customer_email",
+  "customer_name",
+  "status"
+ ],
+ "fields": [
+  {
+   "fieldname": "appointment_queue",
+   "fieldtype": "Link",
+   "label": "Appointment Queue",
+   "options": "Appointment Queue",
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_email",
+   "fieldtype": "Data",
+   "label": "Customer Email",
+   "reqd": 1
+  },
+  {
+   "fieldname": "customer_name",
+   "fieldtype": "Data",
+   "label": "Customer Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Queued\nActive\nCompleted\nCancelled",
+   "default": "Queued"
+  }
+ ],
+ "modified": "2024-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CRM",
+ "name": "Appointment Queue Entry",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

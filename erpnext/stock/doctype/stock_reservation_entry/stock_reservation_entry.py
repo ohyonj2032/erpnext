@@ -1589,25 +1589,26 @@ def create_stock_reservation_entries_for_so_items(
 
 	from erpnext.selling.doctype.sales_order.sales_order import get_unreserved_qty
 
-	if not from_voucher_type and (
-		sales_order.get("_action") == "submit"
-		and sales_order.set_warehouse
-		and cint(frappe.get_cached_value("Warehouse", sales_order.set_warehouse, "is_group"))
-	):
-		return frappe.msgprint(
-			_("Stock cannot be reserved in the group warehouse {0}.").format(
-				frappe.bold(sales_order.set_warehouse)
-			)
-		)
+	def get_locked_sales_order_and_items() -> tuple[object, list[object]]:
+		locked_sales_order = sales_order
+		if sales_order.name:
+			locked_sales_order = frappe.get_doc(sales_order.doctype, sales_order.name, for_update=True)
 
-	validate_stock_reservation_settings(sales_order)
+		if not items_details:
+			return locked_sales_order, list(locked_sales_order.get("items"))
 
-	allow_partial_reservation = frappe.get_single_value("Stock Settings", "allow_partial_reservation")
-
-	items = []
-	if items_details:
+		so_items_by_name = {row.name: row for row in locked_sales_order.get("items")}
+		items = []
 		for item in items_details:
-			so_item = frappe.get_doc("Sales Order Item", item.get("sales_order_item"))
+			so_item = so_items_by_name.get(item.get("sales_order_item"))
+			if not so_item:
+				frappe.throw(
+					_("Sales Order Item {0} does not exist in Sales Order {1}.").format(
+						frappe.bold(item.get("sales_order_item")), frappe.bold(locked_sales_order.name)
+					)
+				)
+
+			so_item = frappe._dict(so_item.as_dict())
 			so_item.warehouse = item.get("warehouse")
 			so_item.qty_to_reserve = (
 				flt(item.get("qty_to_reserve"))
@@ -1620,13 +1621,31 @@ def create_stock_reservation_entries_for_so_items(
 			so_item.from_voucher_no = item.get("from_voucher_no")
 			so_item.from_voucher_detail_no = item.get("from_voucher_detail_no")
 			so_item.serial_and_batch_bundle = item.get("serial_and_batch_bundle")
-
 			items.append(so_item)
 
-	sre_count = 0
-	reserved_qty_details = get_sre_reserved_qty_details_for_voucher("Sales Order", sales_order.name)
+		return locked_sales_order, items
 
-	for item in items if items_details else sales_order.get("items"):
+	locked_sales_order, items = get_locked_sales_order_and_items()
+
+	if not from_voucher_type and (
+		sales_order.get("_action") == "submit"
+		and locked_sales_order.set_warehouse
+		and cint(frappe.get_cached_value("Warehouse", locked_sales_order.set_warehouse, "is_group"))
+	):
+		return frappe.msgprint(
+			_("Stock cannot be reserved in the group warehouse {0}.").format(
+				frappe.bold(locked_sales_order.set_warehouse)
+			)
+		)
+
+	validate_stock_reservation_settings(locked_sales_order)
+
+	allow_partial_reservation = frappe.get_single_value("Stock Settings", "allow_partial_reservation")
+
+	sre_count = 0
+	reserved_qty_details = get_sre_reserved_qty_details_for_voucher("Sales Order", locked_sales_order.name)
+
+	for item in items:
 		# Skip if `Reserved Stock` is not checked for the item.
 		if not item.get("reserve_stock"):
 			continue
@@ -1740,15 +1759,15 @@ def create_stock_reservation_entries_for_so_items(
 		sre.warehouse = item.warehouse
 		sre.has_serial_no = has_serial_no
 		sre.has_batch_no = has_batch_no
-		sre.voucher_type = sales_order.doctype
-		sre.voucher_no = sales_order.name
+		sre.voucher_type = locked_sales_order.doctype
+		sre.voucher_no = locked_sales_order.name
 		sre.voucher_detail_no = item.name
 		sre.available_qty = available_qty_to_reserve
 		sre.voucher_qty = item.stock_qty
 		sre.reserved_qty = qty_to_be_reserved
-		sre.company = sales_order.company
+		sre.company = locked_sales_order.company
 		sre.stock_uom = item.stock_uom
-		sre.project = sales_order.project
+		sre.project = locked_sales_order.project
 
 		if from_voucher_type:
 			sre.from_voucher_type = from_voucher_type
@@ -1779,6 +1798,7 @@ def create_stock_reservation_entries_for_so_items(
 
 		sre.save()
 		sre.submit()
+		reserved_qty_details[item.name] = flt(reserved_qty_details.get(item.name)) + flt(sre.reserved_qty)
 
 		sre_count += 1
 

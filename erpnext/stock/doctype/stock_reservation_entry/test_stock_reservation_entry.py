@@ -625,8 +625,56 @@ class TestStockReservationEntry(ERPNextTestSuite):
 		)
 		so.create_stock_reservation_entries()
 
-		# Test - 1: ValidationError should be thrown as the inwarded stock is reserved.
 		self.assertRaises(frappe.ValidationError, se.cancel)
+
+	@ERPNextTestSuite.change_settings(
+		"Stock Settings",
+		{
+			"allow_negative_stock": 0,
+			"enable_stock_reservation": 1,
+			"allow_partial_reservation": 1,
+			"auto_reserve_serial_and_batch": 0,
+		},
+	)
+	def test_split_reservation_request_updates_remaining_qty(self) -> None:
+		create_material_receipt(items={self.sr_item.name: self.sr_item}, warehouse=self.warehouse, qty=100)
+
+		so = make_sales_order(
+			item_code=self.sr_item.name,
+			warehouse=self.warehouse,
+			qty=100,
+			rate=100,
+			do_not_submit=True,
+		)
+		so.items[0].reserve_stock = 1
+		so.save()
+		so.submit()
+
+		so.create_stock_reservation_entries(
+			items_details=[
+				{
+					"sales_order_item": so.items[0].name,
+					"item_code": self.sr_item.name,
+					"warehouse": self.warehouse,
+					"qty_to_reserve": 60,
+				},
+				{
+					"sales_order_item": so.items[0].name,
+					"item_code": self.sr_item.name,
+					"warehouse": self.warehouse,
+					"qty_to_reserve": 60,
+				},
+			],
+			from_voucher_type="Pick List",
+			notify=False,
+		)
+		so.reload()
+
+		sre_details = get_stock_reservation_entries_for_voucher(
+			"Sales Order", so.name, so.items[0].name, fields=["reserved_qty"]
+		)
+		self.assertEqual(sum(row.reserved_qty for row in sre_details), so.items[0].stock_qty)
+		self.assertEqual(so.items[0].stock_reserved_qty, so.items[0].stock_qty)
 
 
 def create_items() -> dict:

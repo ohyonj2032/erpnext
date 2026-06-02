@@ -337,6 +337,9 @@ class SalesOrder(SellingController):
 					)
 
 		if self.po_no and self.customer and not self.skip_delivery_note:
+			# Lock the customer to prevent concurrent Sales Orders from bypassing the po_no validation
+			frappe.db.sql("select name from `tabCustomer` where name=%s for update", self.customer)
+
 			so = frappe.db.get_value(
 				"Sales Order",
 				filters={
@@ -657,6 +660,12 @@ class SalesOrder(SellingController):
 					_valid_for_reserve(d.item_code, d.warehouse)
 
 		for item_code, warehouse in item_wh_list:
+			# Lock the bin to prevent concurrent updates from missing each other's transactions
+			if item_code and warehouse:
+				from erpnext.stock.utils import get_or_make_bin
+				bin_name = get_or_make_bin(item_code, warehouse)
+				frappe.db.sql("select name from `tabBin` where name=%s for update", bin_name)
+
 			update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
 
 	def on_update_after_submit(self):

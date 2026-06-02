@@ -1,0 +1,333 @@
+diff --git a/1.2.3.patch b/1.2.3.patch
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/crm/doctype/appointment_queue/__init__.py b/erpnext/crm/doctype/appointment_queue/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/crm/doctype/appointment_queue/api.py b/erpnext/crm/doctype/appointment_queue/api.py
+new file mode 100644
+index 0000000000..1bb137ac4d
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/api.py
+@@ -0,0 +1,100 @@
++import frappe
++from frappe import _
++
++@frappe.whitelist()
++def create_appointment(queue_name, customer_email, customer_name):
++	"""
++	Create an appointment in the given queue with concurrency control
++	"""
++	# 使用 FOR UPDATE 获取行级排他锁，防止高并发下超卖
++	queue = frappe.db.sql("""
++		SELECT name, capacity, booked_count, status
++		FROM `tabAppointment Queue`
++		WHERE name = %s FOR UPDATE
++	""", (queue_name,), as_dict=True)
++	
++	if not queue:
++		frappe.throw(_("Appointment Queue not found"), exc=frappe.DoesNotExistError)
++	
++	queue = queue[0]
++	
++	if queue.status != "Open":
++		frappe.throw(_("Appointment Queue is currently closed"))
++	
++	if queue.booked_count >= queue.capacity:
++		frappe.throw(_("Appointment Queue is fully booked! Cannot overbook."))
++	
++	# 创建排队记录
++	entry = frappe.get_doc({
++		"doctype": "Appointment Queue Entry",
++		"appointment_queue": queue.name,
++		"customer_email": customer_email,
++		"customer_name": customer_name,
++		"status": "Queued"
++	})
++	entry.insert(ignore_permissions=True)
++	
++	# 更新当前预约数
++	frappe.db.set_value("Appointment Queue", queue.name, "booked_count", queue.booked_count + 1)
++	
++	# Frappe 框架会在请求成功结束时自动 COMMIT 释放锁
++	return entry.name
++
++@frappe.whitelist()
++def get_appointment_status(entry_name):
++	"""
++	View appointment status and current queue position
++	"""
++	if not frappe.db.exists("Appointment Queue Entry", entry_name):
++		frappe.throw(_("Appointment not found"), exc=frappe.DoesNotExistError)
++	
++	entry = frappe.get_doc("Appointment Queue Entry", entry_name)
++	entry.check_permission("read")
++	
++	position = None
++	if entry.status == "Queued":
++		# 计算在自己之前创建且仍在排队中的记录数
++		position = frappe.db.count("Appointment Queue Entry", filters={
++			"appointment_queue": entry.appointment_queue,
++			"status": "Queued",
++			"creation": ("<", entry.creation)
++		}) + 1
++	
++	return {
++		"name": entry.name,
++		"queue": entry.appointment_queue,
++		"status": entry.status,
++		"queue_position": position
++	}
++
++@frappe.whitelist()
++def cancel_appointment(entry_name):
++	"""
++	Cancel an appointment and release the booked slot
++	"""
++	entry = frappe.get_doc("Appointment Queue Entry", entry_name)
++	entry.check_permission("write")
++	
++	if entry.status in ["Cancelled", "Completed"]:
++		frappe.throw(_("Cannot cancel an appointment that is already {0}").format(entry.status))
++	
++	# 获取行锁，防止并发取消/创建导致计数错误
++	queue = frappe.db.sql("""
++		SELECT name, booked_count
++		FROM `tabAppointment Queue`
++		WHERE name = %s FOR UPDATE
++	""", (entry.appointment_queue,), as_dict=True)
++	
++	if not queue:
++		frappe.throw(_("Appointment Queue not found"))
++	
++	queue = queue[0]
++	
++	# 更新排队记录状态
++	entry.db_set("status", "Cancelled")
++	
++	# 释放名额
++	if queue.booked_count > 0:
++		frappe.db.set_value("Appointment Queue", queue.name, "booked_count", queue.booked_count - 1)
++		
++	return entry.status
+diff --git a/erpnext/crm/doctype/appointment_queue/appointment_queue.json b/erpnext/crm/doctype/appointment_queue/appointment_queue.json
+new file mode 100644
+index 0000000000..1914110372
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/appointment_queue.json
+@@ -0,0 +1,73 @@
++{
++ "actions": [],
++ "autoname": "field:queue_name",
++ "creation": "2024-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "engine": "InnoDB",
++ "field_order": [
++  "queue_name",
++  "date",
++  "capacity",
++  "booked_count",
++  "status"
++ ],
++ "fields": [
++  {
++   "fieldname": "queue_name",
++   "fieldtype": "Data",
++   "label": "Queue Name",
++   "reqd": 1,
++   "unique": 1
++  },
++  {
++   "fieldname": "date",
++   "fieldtype": "Date",
++   "label": "Date",
++   "reqd": 1
++  },
++  {
++   "fieldname": "capacity",
++   "fieldtype": "Int",
++   "label": "Capacity",
++   "reqd": 1,
++   "default": "100"
++  },
++  {
++   "fieldname": "booked_count",
++   "fieldtype": "Int",
++   "label": "Booked Count",
++   "read_only": 1,
++   "default": "0"
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "Open\nClosed",
++   "default": "Open"
++  }
++ ],
++ "modified": "2024-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "CRM",
++ "name": "Appointment Queue",
++ "naming_rule": "By fieldname",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "sort_field": "modified",
++ "sort_order": "DESC",
++ "track_changes": 1
++}
+\ No newline at end of file
+diff --git a/erpnext/crm/doctype/appointment_queue/appointment_queue.py b/erpnext/crm/doctype/appointment_queue/appointment_queue.py
+new file mode 100644
+index 0000000000..f1037538b4
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/appointment_queue.py
+@@ -0,0 +1,30 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe.model.document import Document
++from frappe import _
++
++class AppointmentQueue(Document):
++	# begin: auto-generated types
++	# This code is auto-generated. Do not modify anything in this block.
++
++	from typing import TYPE_CHECKING
++
++	if TYPE_CHECKING:
++		from frappe.types import DF
++
++		queue_name: DF.Data
++		date: DF.Date
++		capacity: DF.Int
++		booked_count: DF.Int
++		status: DF.Literal["Open", "Closed"]
++	# end: auto-generated types
++
++	def validate(self):
++		if self.capacity < 0:
++			frappe.throw(_("Capacity cannot be negative"))
++		if self.booked_count < 0:
++			self.booked_count = 0
++		if self.booked_count > self.capacity:
++			frappe.throw(_("Booked count cannot exceed capacity"))
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/__init__.py b/erpnext/crm/doctype/appointment_queue_entry/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json
+new file mode 100644
+index 0000000000..40bca1010b
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json
+@@ -0,0 +1,64 @@
++{
++ "actions": [],
++ "autoname": "CRM-APP-QUEUE-.YYYY.-.####",
++ "creation": "2024-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "engine": "InnoDB",
++ "field_order": [
++  "appointment_queue",
++  "customer_email",
++  "customer_name",
++  "status"
++ ],
++ "fields": [
++  {
++   "fieldname": "appointment_queue",
++   "fieldtype": "Link",
++   "label": "Appointment Queue",
++   "options": "Appointment Queue",
++   "reqd": 1
++  },
++  {
++   "fieldname": "customer_email",
++   "fieldtype": "Data",
++   "label": "Customer Email",
++   "reqd": 1
++  },
++  {
++   "fieldname": "customer_name",
++   "fieldtype": "Data",
++   "label": "Customer Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "Queued\nActive\nCompleted\nCancelled",
++   "default": "Queued"
++  }
++ ],
++ "modified": "2024-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "CRM",
++ "name": "Appointment Queue Entry",
++ "naming_rule": "Expression",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "sort_field": "modified",
++ "sort_order": "DESC",
++ "track_changes": 1
++}
+\ No newline at end of file
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py
+new file mode 100644
+index 0000000000..1327f71b2d
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py
+@@ -0,0 +1,25 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe.model.document import Document
++from frappe import _
++
++class AppointmentQueueEntry(Document):
++	# begin: auto-generated types
++	# This code is auto-generated. Do not modify anything in this block.
++
++	from typing import TYPE_CHECKING
++
++	if TYPE_CHECKING:
++		from frappe.types import DF
++
++		appointment_queue: DF.Link
++		customer_email: DF.Data
++		customer_name: DF.Data
++		status: DF.Literal["Queued", "Active", "Completed", "Cancelled"]
++	# end: auto-generated types
++
++	def validate(self):
++		if not frappe.db.exists("Appointment Queue", self.appointment_queue):
++			frappe.throw(_("Linked Appointment Queue does not exist"))

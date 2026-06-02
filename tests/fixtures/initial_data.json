@@ -1,0 +1,27 @@
+{
+  "inventory": [
+    {
+      "item_code": "ITEM-001",
+      "actual_qty": 100
+    },
+    {
+      "item_code": "ITEM-002",
+      "actual_qty": 50
+    }
+  ],
+  "orders": [
+    {
+      "order_id": "ORD-2023-001",
+      "items": [
+        {"item_code": "ITEM-001", "qty": 10},
+        {"item_code": "ITEM-002", "qty": 5}
+      ]
+    },
+    {
+      "order_id": "ORD-2023-002",
+      "items": [
+        {"item_code": "ITEM-001", "qty": 95}
+      ]
+    }
+  ]
+}

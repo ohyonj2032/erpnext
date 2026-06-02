@@ -1,0 +1,108 @@
+{
+  "orders": [
+    {
+      "doctype": "Sales Order",
+      "name": "TEST-SO-RACE-001",
+      "company": "_Test Company",
+      "customer": "_Test Customer",
+      "transaction_date": "2026-01-01",
+      "delivery_date": "2026-01-15",
+      "currency": "INR",
+      "selling_price_list": "_Test Price List",
+      "order_type": "Sales",
+      "status": "Draft",
+      "items": [
+        {
+          "doctype": "Sales Order Item",
+          "item_code": "_Test Item",
+          "qty": 10,
+          "rate": 100,
+          "warehouse": "_Test Warehouse - _TC",
+          "delivery_date": "2026-01-15"
+        }
+      ]
+    },
+    {
+      "doctype": "Sales Order",
+      "name": "TEST-SO-RACE-002",
+      "company": "_Test Company",
+      "customer": "_Test Customer",
+      "transaction_date": "2026-01-02",
+      "delivery_date": "2026-01-16",
+      "currency": "INR",
+      "selling_price_list": "_Test Price List",
+      "order_type": "Sales",
+      "status": "Draft",
+      "items": [
+        {
+          "doctype": "Sales Order Item",
+          "item_code": "_Test Item",
+          "qty": 5,
+          "rate": 100,
+          "warehouse": "_Test Warehouse - _TC",
+          "delivery_date": "2026-01-16"
+        }
+      ]
+    },
+    {
+      "doctype": "Sales Order",
+      "name": "TEST-SO-RACE-003",
+      "company": "_Test Company",
+      "customer": "_Test Customer",
+      "transaction_date": "2026-01-03",
+      "delivery_date": "2026-01-17",
+      "currency": "INR",
+      "selling_price_list": "_Test Price List",
+      "order_type": "Sales",
+      "status": "Draft",
+      "items": [
+        {
+          "doctype": "Sales Order Item",
+          "item_code": "_Test Item",
+          "qty": 20,
+          "rate": 100,
+          "warehouse": "_Test Warehouse - _TC",
+          "delivery_date": "2026-01-17"
+        }
+      ]
+    },
+    {
+      "doctype": "Sales Order",
+      "name": "TEST-SO-RACE-004",
+      "company": "_Test Company",
+      "customer": "_Test Customer",
+      "transaction_date": "2026-01-04",
+      "delivery_date": "2026-01-18",
+      "currency": "INR",
+      "selling_price_list": "_Test Price List",
+      "order_type": "Sales",
+      "status": "Draft",
+      "items": [
+        {
+          "doctype": "Sales Order Item",
+          "item_code": "_Test Item Home Desktop 100",
+          "qty": 3,
+          "rate": 200,
+          "warehouse": "_Test Warehouse - _TC",
+          "delivery_date": "2026-01-18"
+        }
+      ]
+    }
+  ],
+  "inventory": {
+    "warehouses": [
+      "_Test Warehouse - _TC",
+      "Stores - _TC"
+    ],
+    "stock_levels": {
+      "_Test Item": {
+        "_Test Warehouse - _TC": 100,
+        "Stores - _TC": 200
+      },
+      "_Test Item Home Desktop 100": {
+        "_Test Warehouse - _TC": 50,
+        "Stores - _TC": 100
+      }
+    }
+  }
+}

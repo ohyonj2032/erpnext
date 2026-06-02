@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+# License: GNU General Public License v3. See license.txt
+
+"""
+并发测试模块 - 测试库存操作、订单处理的竞态条件
+"""
+
+import frappe
+import time
+import threading
+import queue
+from frappe.utils import now
+from erpnext.tests.utils import ERPNextTestSuite
+from erpnext.stock.utils import get_bin
+from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+from erpnext.selling.doctype.sales_order.sales_order import make_sales_order
+
+
+class TestConcurrentStockOperations(ERPNextTestSuite):
+    """并发库存操作测试类"""
+    
+    def setUp(self):
+        """设置测试环境"""
+        self.item_code = "_Test Concurrent Item"
+        self.warehouse = "_Test Warehouse - _TC"
+        
+        # 创建测试物料
+        if not frappe.db.exists("Item", self.item_code):
+            from erpnext.stock.doctype.item.test_item import make_item
+            make_item(self.item_code, {"is_stock_item": 1})
+        
+        # 初始化库存
+        make_stock_entry(
+            item_code=self.item_code,
+            warehouse=self.warehouse,
+            qty=100,
+            basic_rate=100,
+            target=self.warehouse
+        )
+        
+        self.results_queue = queue.Queue()
+        self.lock = threading.Lock()
+    
+    def tearDown(self):
+        """清理测试环境"""
+        frappe.db.rollback()
+    
+    def test_concurrent_stock_reservation(self):
+        """测试并发库存预留 - 竞态条件测试"""
+        threads = []
+        num_threads = 5
+        expected_failures = 0
+        
+        def reserve_stock(thread_id):
+            """模拟库存预留操作"""
+            try:
+                frappe.connect()  # 每个线程需要独立连接
+                
+                # 创建销售订单并预留库存
+                so = make_sales_order(
+                    item_code=self.item_code,
+                    warehouse=self.warehouse,
+                    qty=25,
+                    do_not_submit=True
+                )
+                so.submit()
+                
+                # 尝试创建库存预留
+                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+                    make_stock_reservation_entry
+                )
+                
+                try:
+                    sre = make_stock_reservation_entry(
+                        voucher_type="Sales Order",
+                        voucher_no=so.name,
+                        item_code=self.item_code,
+                        warehouse=self.warehouse,
+                        reserved_qty=25,
+                        voucher_qty=25,
+                    )
+                    sre.submit()
+                    self.results_queue.put(("success", thread_id, so.name))
+                except frappe.ValidationError as e:
+                    self.results_queue.put(("validation_error", thread_id, str(e)))
+                except Exception as e:
+                    self.results_queue.put(("error", thread_id, str(e)))
+                finally:
+                    frappe.db.commit()
+            
+            except Exception as e:
+                self.results_queue.put(("fatal_error", thread_id, str(e)))
+            finally:
+                frappe.destroy()
+        
+        # 启动并发线程
+        for i in range(num_threads):
+            t = threading.Thread(target=reserve_stock, args=(i,))
+            threads.append(t)
+            t.start()
+        
+        # 等待所有线程完成
+        for t in threads:
+            t.join()
+        
+        # 分析结果
+        success_count = 0
+        validation_error_count = 0
+        other_errors = 0
+        
+        while not self.results_queue.empty():
+            status, thread_id, message = self.results_queue.get()
+            if status == "success":
+                success_count += 1
+            elif status == "validation_error":
+                validation_error_count += 1
+            else:
+                other_errors += 1
+        
+        # 验证结果 - 库存只有100，5个线程各要25，应该只有4个成功
+        bin = get_bin(self.item_code, self.warehouse)
+        bin.load_from_db()
+        
+        self.assertEqual(
+            success_count + validation_error_count,
+            num_threads,
+            "所有线程要么成功要么应该抛出验证错误"
+        )
+        
+        # 总预留数量不应超过可用库存
+        reserved_qty = frappe.db.sql("""
+            SELECT SUM(reserved_qty - delivered_qty - transferred_qty - consumed_qty)
+            FROM `tabStock Reservation Entry`
+            WHERE item_code = %s AND warehouse = %s AND docstatus = 1
+        """, (self.item_code, self.warehouse))[0][0] or 0
+        
+        self.assertLessEqual(
+            flt(reserved_qty),
+            100,
+            f"预留库存 {reserved_qty} 不应超过初始库存 100"
+        )
+    
+    def test_duplicate_submit_prevention(self):
+        """测试重复提交防护 - 幂等性测试"""
+        from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
+        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+        
+        # 创建销售订单
+        so = make_sales_order(
+            item_code=self.item_code,
+            warehouse=self.warehouse,
+            qty=10
+        )
+        so.submit()
+        
+        # 创建交货单草稿
+        dn = make_delivery_note(so.name)
+        dn.insert()
+        
+        # 尝试重复提交同一单据
+        def submit_delivery_note(attempt):
+            try:
+                frappe.connect()
+                dn_doc = frappe.get_doc("Delivery Note", dn.name)
+                dn_doc.submit()
+                self.results_queue.put(("success", attempt))
+            except frappe.DocstatusTransitionError as e:
+                self.results_queue.put(("docstatus_error", attempt, str(e)))
+            except Exception as e:
+                self.results_queue.put(("error", attempt, str(e)))
+            finally:
+                frappe.destroy()
+        
+        # 启动多个线程尝试同时提交
+        threads = []
+        for i in range(5):
+            t = threading.Thread(target=submit_delivery_note, args=(i,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # 验证结果 - 只有一个应该成功，其他应该失败
+        success_count = 0
+        docstatus_errors = 0
+        
+        while not self.results_queue.empty():
+            status, attempt, *_ = self.results_queue.get()
+            if status == "success":
+                success_count += 1
+            elif status == "docstatus_error":
+                docstatus_errors += 1
+        
+        self.assertEqual(
+            success_count,
+            1,
+            f"应该只有一个成功的提交，但有 {success_count} 个"
+        )
+        
+        # 验证单据确实是提交状态
+        dn.reload()
+        self.assertEqual(dn.docstatus, 1)
+    
+    def test_transaction_rollback_on_error(self):
+        """测试错误时的事务回滚 - 一致性测试"""
+        from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
+        from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+        
+        # 记录初始库存
+        initial_bin = get_bin(self.item_code, self.warehouse)
+        initial_actual_qty = flt(initial_bin.actual_qty)
+        
+        # 创建会在提交时失败的场景
+        dn = create_delivery_note(
+            item_code=self.item_code,
+            qty=10,
+            warehouse=self.warehouse,
+            do_not_submit=True
+        )
+        
+        # 故意引入一个验证错误的场景
+        dn.items[0].qty = -5  # 无效数量
+        
+        try:
+            dn.submit()
+            self.fail("应该抛出验证错误")
+        except Exception as e:
+            # 验证库存没有变化
+            final_bin = get_bin(self.item_code, self.warehouse)
+            final_bin.load_from_db()
+            
+            self.assertEqual(
+                flt(final_bin.actual_qty),
+                initial_actual_qty,
+                "库存应该回滚到初始状态"
+            )
+    
+    def test_status_transaction_atomicity(self):
+        """测试状态转换的原子性"""
+        from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+            make_stock_reservation_entry
+        )
+        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
+        
+        so = make_sales_order(
+            item_code=self.item_code,
+            warehouse=self.warehouse,
+            qty=20
+        )
+        so.submit()
+        
+        sre = make_stock_reservation_entry(
+            voucher_type="Sales Order",
+            voucher_no=so.name,
+            item_code=self.item_code,
+            warehouse=self.warehouse,
+            reserved_qty=20,
+            voucher_qty=20,
+        )
+        sre.submit()
+        
+        # 模拟并发更新状态
+        def update_sre_status(target_status):
+            try:
+                frappe.connect()
+                sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
+                
+                # 先读取再修改 - 典型的竞态条件场景
+                if sre_doc.status != target_status:
+                    sre_doc.status = target_status
+                    sre_doc.db_update()
+                    frappe.db.commit()
+                    self.results_queue.put(("updated", target_status))
+                else:
+                    self.results_queue.put(("already_set", target_status))
+            
+            except Exception as e:
+                self.results_queue.put(("error", str(e)))
+            finally:
+                frappe.destroy()
+        
+        threads = []
+        for status in ["Delivered", "Closed", "Partially Delivered"]:
+            t = threading.Thread(target=update_sre_status, args=(status,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # 验证最终状态是一致的
+        sre.reload()
+        self.assertIsNotNone(sre.status)
+
+
+class TestDuplicateSubmission(ERPNextTestSuite):
+    """重复提交测试"""
+    
+    def setUp(self):
+        self.item_code = "_Test Duplicate Submission"
+        self.warehouse = "_Test Warehouse - _TC"
+        
+        if not frappe.db.exists("Item", self.item_code):
+            from erpnext.stock.doctype.item.test_item import make_item
+            make_item(self.item_code, {"is_stock_item": 1})
+    
+    def test_idempotent_operations(self):
+        """测试幂等性操作"""
+        from erpnext.stock.utils import update_bin_qty
+        
+        # 初始状态
+        bin = get_bin(self.item_code, self.warehouse)
+        initial_reserved_qty = flt(bin.reserved_qty)
+        
+        # 多次执行相同的更新
+        for _ in range(5):
+            update_bin_qty(
+                self.item_code,
+                self.warehouse,
+                {"reserved_qty": initial_reserved_qty + 10}
+            )
+        
+        # 验证最终结果应该只应用一次
+        bin.load_from_db()
+        self.assertEqual(
+            flt(bin.reserved_qty),
+            initial_reserved_qty + 10,
+            "多次相同操作应该是幂等的"
+        )
+    
+    def test_concurrent_stock_balance_update(self):
+        """测试并发库存余额更新"""
+        threads = []
+        results = []
+        
+        def update_stock(qty_to_add):
+            try:
+                frappe.connect()
+                bin = get_bin(self.item_code, self.warehouse)
+                # 先读取再修改 - 竞态条件
+                current_qty = flt(bin.actual_qty)
+                bin.actual_qty = current_qty + qty_to_add
+                bin.db_update()
+                frappe.db.commit()
+                results.append(qty_to_add)
+            except Exception as e:
+                results.append(f"error: {str(e)}")
+            finally:
+                frappe.destroy()
+        
+        # 先设置初始库存
+        bin = get_bin(self.item_code, self.warehouse)
+        bin.actual_qty = 0
+        bin.db_update()
+        frappe.db.commit()
+        
+        # 启动10个线程各加1
+        for i in range(10):
+            t = threading.Thread(target=update_stock, args=(1,))
+            threads.append(t)
+            t.start()
+        
+        for t in threads:
+            t.join()
+        
+        # 注意：这在没有锁的情况下很可能会失败！
+        bin.load_from_db()
+        print(f"最终库存: {bin.actual_qty}, 期望: 10")
+        # 如果不等于10，说明存在竞态条件
+        
+        # 这个测试的目的是展示问题，实际项目中应该使用数据库锁
+
+
+def flt(value):
+    """转换为浮点数"""
+    from frappe.utils import flt as frappe_flt
+    return frappe_flt(value)

@@ -294,6 +294,7 @@ standard_portal_menu_items = [
 		"role": "Customer",
 	},
 	{"title": "Appointment Booking", "route": "/book_appointment"},
+	{"title": "Appointment Queue", "route": "/appointment-queue"},
 ]
 
 sounds = [
@@ -722,4 +723,11 @@ repost_allowed_doctypes = [
 	"Journal Entry",
 	"Payment Entry",
 	"Purchase Receipt",
+]
+
+# Appointment Queue
+# -----------------
+appointment_queue_schedulers = [
+	"erpnext.crm.doctype.appointment_queue.scheduler.process_queue_notifications",
+	"erpnext.crm.doctype.appointment_queue.scheduler.auto_cancel_no_shows",
 ]

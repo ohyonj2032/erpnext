@@ -1,0 +1,23 @@
+diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+index bba172e498..88c04ff4db 100644
+--- a/erpnext/hooks.py
++++ b/erpnext/hooks.py
+@@ -294,6 +294,7 @@ standard_portal_menu_items = [
+ 		"role": "Customer",
+ 	},
+ 	{"title": "Appointment Booking", "route": "/book_appointment"},
++	{"title": "Appointment Queue", "route": "/appointment-queue"},
+ ]
+ 
+ sounds = [
+@@ -723,3 +724,10 @@ repost_allowed_doctypes = [
+ 	"Payment Entry",
+ 	"Purchase Receipt",
+ ]
++
++# Appointment Queue
++# -----------------
++appointment_queue_schedulers = [
++	"erpnext.crm.doctype.appointment_queue.scheduler.process_queue_notifications",
++	"erpnext.crm.doctype.appointment_queue.scheduler.auto_cancel_no_shows",
++]

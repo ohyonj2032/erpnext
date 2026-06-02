@@ -1,0 +1,168 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:queue_name",
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "queue_name",
+  "enable_queue",
+  "column_break_1",
+  "description",
+  "capacity_section",
+  "max_concurrent_per_slot",
+  "default_service_duration",
+  "column_break_2",
+  "advance_booking_days",
+  "auto_assign_agents",
+  "time_slots_section",
+  "time_slots",
+  "agents_section",
+  "agent_list",
+  "notification_section",
+  "send_email_notifications",
+  "column_break_3",
+  "notify_before_minutes"
+ ],
+ "fields": [
+  {
+   "fieldname": "queue_name",
+   "fieldtype": "Data",
+   "label": "Queue Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enable_queue",
+   "fieldtype": "Check",
+   "label": "Enable Queue"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "capacity_section",
+   "fieldtype": "Section Break",
+   "label": "Capacity Settings"
+  },
+  {
+   "default": "5",
+   "fieldname": "max_concurrent_per_slot",
+   "fieldtype": "Int",
+   "label": "Max Concurrent Per Time Slot",
+   "reqd": 1
+  },
+  {
+   "default": "30",
+   "fieldname": "default_service_duration",
+   "fieldtype": "Int",
+   "label": "Default Service Duration (Minutes)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "7",
+   "fieldname": "advance_booking_days",
+   "fieldtype": "Int",
+   "label": "Advance Booking Days",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "auto_assign_agents",
+   "fieldtype": "Check",
+   "label": "Auto Assign Agents"
+  },
+  {
+   "fieldname": "time_slots_section",
+   "fieldtype": "Section Break",
+   "label": "Time Slots"
+  },
+  {
+   "fieldname": "time_slots",
+   "fieldtype": "Table",
+   "label": "Time Slots",
+   "options": "Appointment Queue Time Slot",
+   "reqd": 1
+  },
+  {
+   "fieldname": "agents_section",
+   "fieldtype": "Section Break",
+   "label": "Agents"
+  },
+  {
+   "fieldname": "agent_list",
+   "fieldtype": "Table",
+   "label": "Agent List",
+   "options": "Appointment Queue Agent"
+  },
+  {
+   "fieldname": "notification_section",
+   "fieldtype": "Section Break",
+   "label": "Notification Settings"
+  },
+  {
+   "default": "1",
+   "fieldname": "send_email_notifications",
+   "fieldtype": "Check",
+   "label": "Send Email Notifications"
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "60",
+   "fieldname": "notify_before_minutes",
+   "fieldtype": "Int",
+   "label": "Notify Before (Minutes)"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CRM",
+ "name": "Appointment Queue Settings",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

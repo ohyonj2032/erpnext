@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "autoname": "field:queue_name",
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "queue_name",
+  "service_type",
+  "is_active",
+  "column_break_1",
+  "max_capacity_per_slot",
+  "section_break_slots",
+  "slots"
+ ],
+ "fields": [
+  {
+   "fieldname": "queue_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Queue Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Service Type",
+   "options": "General\nExpress\nVIP",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "10",
+   "fieldname": "max_capacity_per_slot",
+   "fieldtype": "Int",
+   "label": "Default Max Capacity Per Slot",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_slots",
+   "fieldtype": "Section Break",
+   "label": "Time Slots"
+  },
+  {
+   "fieldname": "slots",
+   "fieldtype": "Table",
+   "label": "Slots",
+   "options": "Appointment Queue Slot",
+   "reqd": 1
+  }
+ ],
+ "links": [
+  {
+   "link_doctype": "Appointment Queue Booking",
+   "link_fieldname": "queue"
+  }
+ ],
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Appointment Queue",
+ "name": "Appointment Queue",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Appointment Queue Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,14 @@
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+index 4d68a79e62..b0d279851d 100755
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -609,6 +609,9 @@ class SalesOrder(SellingController):
+ 			frappe.throw(_("{0} {1} has been modified. Please refresh.").format(self.doctype, self.name))
+ 
+ 	def update_status(self, status):
++		# [BugFix] 添加行级悲观锁，防止并发请求（如库存模块和订单模块同时触发状态流转）导致的竞态条件和重复提交
++		frappe.db.get_value("Sales Order", self.name, "name", for_update=True)
++		
+ 		self.check_modified_date()
+ 		self.set_status(update=True, status=status)
+ 		# Upon Sales Order Re-open, check for credit limit.

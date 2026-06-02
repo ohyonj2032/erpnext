@@ -508,6 +508,14 @@ class SalesOrder(SellingController):
 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
 
 	def on_submit(self):
+		# 检查是否启用新架构
+		if frappe.get_cached_value("Selling Settings", None, "use_new_sales_order_architecture"):
+			self._on_submit_new_architecture()
+		else:
+			self._on_submit_legacy()
+
+	def _on_submit_legacy(self):
+		"""原有的提交逻辑（保持向后兼容）"""
 		super().update_prevdoc_status()
 		self.check_credit_limit()
 		self.update_reserved_qty()
@@ -530,6 +538,21 @@ class SalesOrder(SellingController):
 
 		self.update_blanket_order()
 
+	def _on_submit_new_architecture(self):
+		"""新架构的提交逻辑（使用应用服务）"""
+		from erpnext.selling.services import SalesOrderService
+
+		service = SalesOrderService()
+		success, message = service.submit_sales_order(
+			sales_order_name=self.name,
+			enable_stock_reservation=True,
+			enable_accounting=True,
+			enable_notifications=True,
+		)
+
+		if not success:
+			frappe.throw(message)
+
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]
 		doctype = frappe.qb.DocType("Delivery Schedule Item")
@@ -538,6 +561,14 @@ class SalesOrder(SellingController):
 		).run()
 
 	def on_cancel(self):
+		# 检查是否启用新架构
+		if frappe.get_cached_value("Selling Settings", None, "use_new_sales_order_architecture"):
+			self._on_cancel_new_architecture()
+		else:
+			self._on_cancel_legacy()
+
+	def _on_cancel_legacy(self):
+		"""原有的取消逻辑（保持向后兼容）"""
 		self.ignore_linked_doctypes = (
 			"GL Entry",
 			"Stock Ledger Entry",
@@ -568,6 +599,16 @@ class SalesOrder(SellingController):
 			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
 
 			update_coupon_code_count(self.coupon_code, "cancelled")
+
+	def _on_cancel_new_architecture(self):
+		"""新架构的取消逻辑（使用应用服务）"""
+		from erpnext.selling.services import SalesOrderService
+
+		service = SalesOrderService()
+		success, message = service.cancel_sales_order(sales_order_name=self.name)
+
+		if not success:
+			frappe.throw(message)
 
 	def update_project(self):
 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":

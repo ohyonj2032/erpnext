@@ -1,2490 +1,2579 @@
 diff --git a/2.3.1.patch b/2.3.1.patch
-index b1b7a680c8..e69de29bb2 100644
+index e1a43a559a..e69de29bb2 100644
 --- a/2.3.1.patch
 +++ b/2.3.1.patch
-@@ -1,1198 +0,0 @@
+@@ -1,2490 +0,0 @@
 -diff --git a/2.3.1.patch b/2.3.1.patch
--new file mode 100644
--index 0000000000..e69de29bb2
+-index b1b7a680c8..e69de29bb2 100644
+---- a/2.3.1.patch
+-+++ b/2.3.1.patch
+-@@ -1,1198 +0,0 @@
+--diff --git a/2.3.1.patch b/2.3.1.patch
+--new file mode 100644
+--index 0000000000..e69de29bb2
+--diff --git a/REFACTORING_GUIDE.md b/REFACTORING_GUIDE.md
+--new file mode 100644
+--index 0000000000..7311acd2a3
+----- /dev/null
+--+++ b/REFACTORING_GUIDE.md
+--@@ -0,0 +1,270 @@
+--+# Sales Order 提交流程重构指南
+--+
+--+## 📋 概述
+--+
+--+本次重构旨在解决 ERPNext 中 Sales Order 提交时的高耦合问题，通过引入**编排层+领域服务+事件驱动**的三层架构来提高代码的可维护性和可扩展性。
+--+
+--+---
+--+
+--+## 🏗️ 重构架构
+--+
+--+### 三层架构设计
+--+
+--+```
+--+┌─────────────────────────────────────────────────────────┐
+--+│                   编排层 (Orchestrator)                  │
+--+│              SalesOrderOrchestrator                      │
+--+│         唯一的提交流程入口，协调各领域服务                │
+--+└─────────────────────────────────────────────────────────┘
+--+                          │
+--+        ┌─────────────────┼─────────────────┐
+--+        │                 │                 │
+--+        ▼                 ▼                 ▼
+--+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+--+│  库存领域    │  │  会计领域    │  │  通知服务    │
+--+│  服务        │  │  服务        │  │  (事件驱动)  │
+--+└──────────────┘  └──────────────┘  └──────────────┘
+--+```
+--+
+--+### 关键组件
+--+
+--+1. **编排层 (`erpnext/selling/services/`)**
+--+   - `SalesOrderOrchestrator`: 主编排器
+--+   - `TransactionManager`: 事务管理器（Sagas 模式）
+--+
+--+2. **领域服务 (`erpnext/stock/services/`, `erpnext/accounts/services/`)**
+--+   - `StockReservationService`: 库存预留服务
+--+   - （待扩展）会计服务等
+--+
+--+3. **事件处理器 (`erpnext/selling/events/`)**
+--+   - 解耦通知等异步操作
+--+
+--+---
+--+
+--+## 🚀 迁移步骤
+--+
+--+### 阶段 1: 基础设施准备（当前已完成）
+--+
+--+✅ 创建服务目录结构
+--+✅ 实现编排器和领域服务
+--+✅ 实现事务管理器和回滚机制
+--+✅ 创建事件处理器
+--+
+--+### 阶段 2: 逐步集成（下一步）
+--+
+--+#### 步骤 1: 备份当前代码
+--+```bash
+--+# 备份原始的 sales_order.py
+--+cp erpnext/selling/doctype/sales_order/sales_order.py \
+--+   erpnext/selling/doctype/sales_order/sales_order.py.backup
+--+```
+--+
+--+#### 步骤 2: 修改 SalesOrder.on_submit 方法
+--+
+--+编辑 `erpnext/selling/doctype/sales_order/sales_order.py`:
+--+
+--+```python
+--+def on_submit(self):
+--+    # 新的方式：使用编排器
+--+    from erpnext.selling.services import SalesOrderOrchestrator
+--+    
+--+    orchestrator = SalesOrderOrchestrator(self)
+--+    orchestrator.submit()
+--+
+--+    # 【可选】保留原有逻辑作为降级方案（初期建议保留）
+--+    # self._on_submit_legacy()
+--+
+--+def _on_submit_legacy(self):
+--+    # 将原有的 on_submit 代码移到这里
+--+    super().update_prevdoc_status()
+--+    self.check_credit_limit()
+--+    # ... 其他原有代码
+--+```
+--+
+--+#### 步骤 3: 添加特性开关（推荐）
+--+
+--+在 `Selling Settings` 中添加开关：
+--+
+--+```python
+--+# 在 SalesOrder.on_submit 中
+--+use_new_orchestrator = frappe.get_cached_value(
+--+    "Selling Settings", 
+--+    None, 
+--+    "use_new_sales_order_orchestrator"
+--+)
+--+
+--+if use_new_orchestrator:
+--+    from erpnext.selling.services import SalesOrderOrchestrator
+--+    SalesOrderOrchestrator(self).submit()
+--+else:
+--+    self._on_submit_legacy()
+--+```
+--+
+--+#### 步骤 4: 逐步迁移 on_cancel
+--+
+--+类似地，修改 `on_cancel` 方法：
+--+
+--+```python
+--+def on_cancel(self):
+--+    from erpnext.selling.events import on_sales_order_cancel
+--+    on_sales_order_cancel(self)
+--+```
+--+
+--+### 阶段 3: 优化和完善
+--+
+--+1. **添加单元测试**
+--+2. **性能监控**
+--+3. **日志增强**
+--+4. **完善错误处理**
+--+
+--+---
+--+
+--+## 🔧 关键设计决策
+--+
+--+### 1. 为什么选择编排器作为唯一入口？
+--+
+--+**问题**：原代码中 `SalesOrder` 类直接调用多个模块：
+--+- `stock` 模块的库存预留
+--+- `accounts` 模块的会计处理
+--+- `notifications` 模块的通知
+--+
+--+**解决方案**：
+--+- ✅ 单一职责原则：`SalesOrder` 只负责文档本身的业务逻辑
+--+- ✅ 降低耦合：各模块通过编排器协调，不直接相互依赖
+--+- ✅ 便于测试：可以独立测试编排逻辑
+--+
+--+### 2. 领域服务 vs 应用服务 vs 事件处理器
+--+
+--+| 组件类型 | 位置 | 职责 | 示例 |
+--+|---------|------|------|------|
+--+| **领域服务** | `erpnext/{module}/services/` | 封装纯领域逻辑 | `StockReservationService` |
+--+| **应用服务** | `erpnext/selling/services/` | 协调用例流程 | `SalesOrderOrchestrator` |
+--+| **事件处理器** | `erpnext/selling/events/` | 解耦异步操作 | 通知发送、审计日志 |
+--+
+--+### 3. 补偿/回滚机制设计
+--+
+--+采用 **Sagas 模式**：
+--+- 每个事务步骤都有对应的回滚操作
+--+- 失败时按相反顺序回滚已成功的步骤
+--+- 回滚失败时记录日志但不中断其他回滚
+--+
+--+```python
+--+# 伪代码示例
+--+transaction = TransactionManager()
+--+transaction.add_step(
+--+    name="StockReservation",
+--+    execute=reserve_stock,
+--+    rollback=cancel_reservation
+--+)
+--+transaction.add_step(
+--+    name="Accounting",
+--+    execute=post_to_gl,
+--+    rollback=reverse_gl_entry
+--+)
+--+transaction.execute()
+--+```
+--+
+--+---
+--+
+--+## 📁 新增文件清单
+--+
+--+```
+--+erpnext/
+--+├── selling/
+--+│   ├── services/
+--+│   │   ├── __init__.py
+--+│   │   ├── sales_order_orchestrator.py  # 编排器
+--+│   │   └── transaction_manager.py        # 事务管理器
+--+│   └── events/
+--+│       ├── __init__.py
+--+│       └── sales_order_events.py         # 事件处理器
+--+└── stock/
+--+    └── services/
+--+        ├── __init__.py
+--+        └── stock_reservation_service.py  # 库存预留服务
+--+```
+--+
+--+---
+--+
+--+## 🎯 重构收益
+--+
+--+1. **可维护性提升**
+--+   - 职责清晰，易于理解
+--+   - 修改某一模块不影响其他模块
+--+
+--+2. **可测试性提升**
+--+   - 可以独立测试各领域服务
+--+   - 编排逻辑可以 mock 依赖
+--+
+--+3. **可扩展性提升**
+--+   - 新增业务步骤只需添加新的领域服务
+--+   - 事件驱动便于添加新的通知类型
+--+
+--+4. **数据一致性**
+--+   - Sagas 模式保证失败时的正确回滚
+--+   - 显式的事务边界
+--+
+--+---
+--+
+--+## ⚠️ 注意事项
+--+
+--+### 迁移风险缓解
+--+
+--+1. **灰度发布**
+--+   - 先在测试环境验证
+--+   - 再在生产环境小范围试用
+--+   - 最后全量切换
+--+
+--+2. **降级方案**
+--+   - 保留原有代码作为降级方案
+--+   - 通过特性开关快速切换
+--+
+--+3. **监控和日志**
+--+   - 增强日志记录
+--+   - 监控关键指标（成功率、耗时等）
+--+
+--+### 向后兼容
+--+
+--+- ✅ 保持公共 API 不变
+--+- ✅ 提供迁移工具
+--+- ✅ 支持逐步迁移
+--+
+--+---
+--+
+--+## 📊 后续扩展建议
+--+
+--+1. **会计领域服务**
+--+   - 将会计相关逻辑从 `SalesOrder` 中剥离
+--+   - 创建 `AccountingService`
+--+
+--+2. **异步处理**
+--+   - 使用 `frappe.enqueue` 处理耗时操作
+--+   - 提高响应速度
+--+
+--+3. **更多文档类型**
+--+   - 将相同模式应用到 `Sales Invoice`、`Purchase Order` 等
+--+   - 统一架构风格
+--+
+--+4. **测试覆盖**
+--+   - 单元测试：测试各领域服务
+--+   - 集成测试：测试编排逻辑
+--+   - E2E 测试：完整流程验证
+--+
+--+---
+--+
+--+## 🆘 常见问题
+--+
+--+### Q: 如何回滚到原版本？
+--+A: 使用特性开关关闭新编排器，或通过 git 恢复原代码。
+--+
+--+### Q: 对性能有影响吗？
+--+A: 理论上影响很小（增加了一层间接调用），实际性能需要测试验证。如发现问题可以优化。
+--+
+--+### Q: 其他文档类型是否也需要重构？
+--+A: 建议采用相同模式，但可以分阶段进行，优先处理高频使用的文档类型。
+--+
+--+---
+--+
+--+## 📞 联系方式
+--+
+--+如有问题或建议，请联系开发团队。
+--diff --git a/erpnext/hooks_refactoring_example.py b/erpnext/hooks_refactoring_example.py
+--new file mode 100644
+--index 0000000000..a087735412
+----- /dev/null
+--+++ b/erpnext/hooks_refactoring_example.py
+--@@ -0,0 +1,47 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+#
+--+# hooks.py 更新示例 - 展示如何添加新的事件钩子
+--+# 【注意】这是一个示例文件，不要直接替换原文件！
+--+# 将 doc_events 部分的修改应用到实际的 hooks.py 中
+--+
+--+# ... (保持 hooks.py 的其他部分不变)
+--+
+--+doc_events = {
+--+    "*": {
+--+        "validate": [
+--+            "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
+--+            "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
+--+        ],
+--+    },
+--+    tuple(period_closing_doctypes): {
+--+        "validate": "erpnext.accounts.doctype.accounting_period.accounting_period.validate_accounting_period_on_doc_save",
+--+    },
+--+    tuple(pre_submit_validation_doctypes): {
+--+        "validate": "erpnext.accounts.utils.pre_submit_validation",
+--+    },
+--+    
+--+    # ========================================================================
+--+    # 新增：Sales Order 事件钩子
+--+    # ========================================================================
+--+    "Sales Order": {
+--+        "on_submit": [
+--+            # 可选：如果使用事件钩子而不是直接在类中调用
+--+            # "erpnext.selling.events.sales_order_events.on_sales_order_submit",
+--+        ],
+--+        "on_cancel": [
+--+            # 可选：如果使用事件钩子而不是直接在类中调用
+--+            # "erpnext.selling.events.sales_order_events.on_sales_order_cancel",
+--+        ],
+--+        "on_update_after_submit": [],
+--+    },
+--+    
+--+    "Stock Entry": {
+--+        "on_submit": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
+--+        "on_cancel": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
+--+    },
+--+    
+--+    # ... (保持 hooks.py 的其他部分不变)
+--+}
+--+
+--+# ... (保持 hooks.py 的其他部分不变)
+--diff --git a/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py b/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
+--new file mode 100644
+--index 0000000000..e35f1ee844
+----- /dev/null
+--+++ b/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
+--@@ -0,0 +1,153 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+#
+--+# 重构后的 Sales Order 示例 - 展示如何使用新的编排器
+--+# 【注意】这是一个示例文件，不要直接替换原文件！
+--+
+--+import frappe
+--+from frappe import _
+--+from erpnext.controllers.selling_controller import SellingController
+--+
+--+
+--+class SalesOrder(SellingController):
+--+    """
+--+    重构后的 Sales Order 类
+--+    将复杂的提交流程委托给编排器
+--+    """
+--+
+--+    def on_submit(self):
+--+        """
+--+        提交方法 - 使用新的编排器
+--+        """
+--+        # 检查是否启用新编排器
+--+        use_new_orchestrator = self._should_use_new_orchestrator()
+--+
+--+        if use_new_orchestrator:
+--+            self._on_submit_new()
+--+        else:
+--+            self._on_submit_legacy()
+--+
+--+    def _on_submit_new(self):
+--+        """
+--+        新的提交流程 - 使用编排器
+--+        """
+--+        try:
+--+            from erpnext.selling.services import SalesOrderOrchestrator
+--+
+--+            orchestrator = SalesOrderOrchestrator(self)
+--+            orchestrator.submit()
+--+
+--+        except Exception as e:
+--+            frappe.log_error(f"New orchestrator failed, falling back to legacy: {str(e)}")
+--+            self._on_submit_legacy()
+--+
+--+    def _on_submit_legacy(self):
+--+        """
+--+        原有的提交流程 - 保留作为降级方案
+--+        """
+--+        super().update_prevdoc_status()
+--+        self.check_credit_limit()
+--+        self.update_reserved_qty()
+--+        self.delete_removed_delivery_schedule_items()
+--+
+--+        frappe.get_cached_doc("Authorization Control").validate_approving_authority(
+--+            self.doctype, self.company, self.base_grand_total, self
+--+        )
+--+        self.update_project()
+--+        self.update_prevdoc_status("submit")
+--+
+--+        self.update_blanket_order()
+--+
+--+        from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
+--+        update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
+--+        
+--+        if self.coupon_code:
+--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--+            update_coupon_code_count(self.coupon_code, "used")
+--+
+--+        if self.get("reserve_stock") and not self.get("is_subcontracted"):
+--+            self.create_stock_reservation_entries()
+--+
+--+    def on_cancel(self):
+--+        """
+--+        取消方法
+--+        """
+--+        use_new_orchestrator = self._should_use_new_orchestrator()
+--+
+--+        if use_new_orchestrator:
+--+            self._on_cancel_new()
+--+        else:
+--+            self._on_cancel_legacy()
+--+
+--+    def _on_cancel_new(self):
+--+        """
+--+        新的取消流程
+--+        """
+--+        try:
+--+            from erpnext.selling.events import on_sales_order_cancel
+--+            on_sales_order_cancel(self)
+--+        except Exception as e:
+--+            frappe.log_error(f"New cancel flow failed, falling back to legacy: {str(e)}")
+--+            self._on_cancel_legacy()
+--+
+--+    def _on_cancel_legacy(self):
+--+        """
+--+        原有的取消流程
+--+        """
+--+        self.ignore_linked_doctypes = (
+--+            "GL Entry",
+--+            "Stock Ledger Entry",
+--+            "Payment Ledger Entry",
+--+            "Advance Payment Ledger Entry",
+--+            "Unreconcile Payment",
+--+            "Unreconcile Payment Entries",
+--+        )
+--+        super().on_cancel()
+--+        super().update_prevdoc_status()
+--+        if self.status == "Closed":
+--+            frappe.throw(_("Closed order cannot be cancelled. Unclose to cancel."))
+--+
+--+        self.delete_delivery_schedule_items()
+--+        self.check_nextdoc_docstatus()
+--+        self.update_reserved_qty()
+--+        self.update_project()
+--+        self.update_prevdoc_status("cancel")
+--+
+--+        self.db_set("status", "Cancelled")
+--+
+--+        self.update_blanket_order()
+--+        self.cancel_stock_reservation_entries()
+--+
+--+        from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
+--+        unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
+--+        
+--+        if self.coupon_code:
+--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--+            update_coupon_code_count(self.coupon_code, "cancelled")
+--+
+--+    def _should_use_new_orchestrator(self) -> bool:
+--+        """
+--+        检查是否应该使用新编排器
+--+        可以通过配置或特性开关控制
+--+        """
+--+        # 方式 1: 通过系统设置
+--+        try:
+--+            return frappe.get_cached_value(
+--+                "Selling Settings", 
+--+                None, 
+--+                "use_new_sales_order_orchestrator"
+--+            ) or False
+--+        except Exception:
+--+            pass
+--+
+--+        # 方式 2: 通过全局标志
+--+        if hasattr(frappe.local, 'flags') and frappe.local.flags.use_new_orchestrator:
+--+            return True
+--+
+--+        # 方式 3: 通过环境变量
+--+        import os
+--+        if os.getenv('ERP_USE_NEW_ORCHESTRATOR') == '1':
+--+            return True
+--+
+--+        # 默认使用旧方式（安全起见）
+--+        return False
+--diff --git a/erpnext/selling/events/__init__.py b/erpnext/selling/events/__init__.py
+--new file mode 100644
+--index 0000000000..46d036b26e
+----- /dev/null
+--+++ b/erpnext/selling/events/__init__.py
+--@@ -0,0 +1,14 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+from erpnext.selling.events.sales_order_events import (
+--+    on_sales_order_submit,
+--+    on_sales_order_cancel,
+--+    handle_sales_order_notification,
+--+)
+--+
+--+__all__ = [
+--+    "on_sales_order_submit",
+--+    "on_sales_order_cancel",
+--+    "handle_sales_order_notification",
+--+]
+--diff --git a/erpnext/selling/events/sales_order_events.py b/erpnext/selling/events/sales_order_events.py
+--new file mode 100644
+--index 0000000000..047cbfeadd
+----- /dev/null
+--+++ b/erpnext/selling/events/sales_order_events.py
+--@@ -0,0 +1,120 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+import frappe
+--+from frappe import _
+--+from typing import Dict
+--+
+--+
+--+def on_sales_order_submit(doc, method=None):
+--+    """
+--+    Sales Order 提交时的事件处理器
+--+    通过 ERPNext 的 doc_events 钩子调用
+--+    """
+--+    try:
+--+        from erpnext.selling.services import SalesOrderOrchestrator
+--+
+--+        # 使用编排器处理提交流程
+--+        orchestrator = SalesOrderOrchestrator(doc)
+--+        orchestrator.submit()
+--+
+--+        frappe.log_error(f"Sales Order {doc.name} submitted via orchestrator")
+--+
+--+    except Exception as e:
+--+        frappe.log_error(f"Error in on_sales_order_submit: {str(e)}")
+--+        raise
+--+
+--+
+--+def on_sales_order_cancel(doc, method=None):
+--+    """
+--+    Sales Order 取消时的事件处理器
+--+    """
+--+    try:
+--+        # 取消库存预留
+--+        from erpnext.stock.services import StockReservationService
+--+
+--+        reservation_service = StockReservationService()
+--+        reservation_service.cancel_reservation_for_sales_order(doc)
+--+
+--+        # 清理其他关联资源
+--+        _cleanup_on_cancel(doc)
+--+
+--+        frappe.log_error(f"Sales Order {doc.name} cancelled successfully")
+--+
+--+    except Exception as e:
+--+        frappe.log_error(f"Error in on_sales_order_cancel: {str(e)}")
+--+
+--+
+--+def _cleanup_on_cancel(doc):
+--+    """
+--+    取消时的清理工作
+--+    """
+--+    # 恢复优惠券
+--+    if doc.coupon_code:
+--+        try:
+--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--+            update_coupon_code_count(doc.coupon_code, "cancelled")
+--+        except Exception as e:
+--+            frappe.log_error(f"Failed to revert coupon code: {str(e)}")
+--+
+--+
+--+@frappe.whitelist()
+--+def handle_sales_order_notification(event_data: Dict):
+--+    """
+--+    处理 Sales Order 相关的通知（异步）
+--+    """
+--+    event_type = event_data.get("event_type")
+--+    sales_order_name = event_data.get("sales_order_name")
+--+
+--+    if not sales_order_name:
+--+        return
+--+
+--+    # 根据事件类型发送不同的通知
+--+    if event_type == "submitted":
+--+        _send_submission_notification(sales_order_name)
+--+    elif event_type == "cancelled":
+--+        _send_cancellation_notification(sales_order_name)
+--+
+--+
+--+def _send_submission_notification(sales_order_name: str):
+--+    """
+--+    发送提交通知
+--+    """
+--+    try:
+--+        doc = frappe.get_doc("Sales Order", sales_order_name)
+--+        
+--+        # 这里可以实现具体的通知逻辑
+--+        # 比如发送邮件、创建待办事项等
+--+        frappe.publish_realtime(
+--+            "sales_order_submission_complete",
+--+            {
+--+                "name": doc.name,
+--+                "customer": doc.customer,
+--+                "grand_total": doc.grand_total
+--+            },
+--+            user=frappe.session.user
+--+        )
+--+
+--+    except Exception as e:
+--+        frappe.log_error(f"Failed to send submission notification: {str(e)}")
+--+
+--+
+--+def _send_cancellation_notification(sales_order_name: str):
+--+    """
+--+    发送取消通知
+--+    """
+--+    try:
+--+        doc = frappe.get_doc("Sales Order", sales_order_name)
+--+        
+--+        frappe.publish_realtime(
+--+            "sales_order_cancelled",
+--+            {
+--+                "name": doc.name,
+--+                "customer": doc.customer,
+--+                "reason": "Cancelled by user"
+--+            },
+--+            user=frappe.session.user
+--+        )
+--+
+--+    except Exception as e:
+--+        frappe.log_error(f"Failed to send cancellation notification: {str(e)}")
+--diff --git a/erpnext/selling/services/__init__.py b/erpnext/selling/services/__init__.py
+--new file mode 100644
+--index 0000000000..192b711339
+----- /dev/null
+--+++ b/erpnext/selling/services/__init__.py
+--@@ -0,0 +1,22 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+from erpnext.selling.services.sales_order_orchestrator import (
+--+    SalesOrderOrchestrator,
+--+    SalesOrderSubmitContext,
+--+)
+--+from erpnext.selling.services.transaction_manager import (
+--+    TransactionManager,
+--+    TransactionStep,
+--+    TransactionContext,
+--+    create_sales_order_transaction,
+--+)
+--+
+--+__all__ = [
+--+    "SalesOrderOrchestrator",
+--+    "SalesOrderSubmitContext",
+--+    "TransactionManager",
+--+    "TransactionStep",
+--+    "TransactionContext",
+--+    "create_sales_order_transaction",
+--+]
+--diff --git a/erpnext/selling/services/sales_order_orchestrator.py b/erpnext/selling/services/sales_order_orchestrator.py
+--new file mode 100644
+--index 0000000000..df5ee14e1b
+----- /dev/null
+--+++ b/erpnext/selling/services/sales_order_orchestrator.py
+--@@ -0,0 +1,201 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+import frappe
+--+from frappe import _
+--+from typing import Dict, List, Optional
+--+from dataclasses import dataclass
+--+
+--+
+--+@dataclass
+--+class SalesOrderSubmitContext:
+--+    """上下文数据结构，在各个步骤间传递数据"""
+--+    sales_order: object
+--+    stock_reservation_result: Optional[Dict] = None
+--+    accounting_result: Optional[Dict] = None
+--+    notification_result: Optional[Dict] = None
+--+    rollback_steps: List[callable] = None
+--+    errors: List[str] = None
+--+
+--+    def __post_init__(self):
+--+        self.rollback_steps = self.rollback_steps or []
+--+        self.errors = self.errors or []
+--+
+--+
+--+class SalesOrderOrchestrator:
+--+    """
+--+    Sales Order 提交流程编排器
+--+    作为唯一的编排入口，协调各个领域服务
+--+    """
+--+
+--+    def __init__(self, sales_order: object):
+--+        self.sales_order = sales_order
+--+        self.context = SalesOrderSubmitContext(sales_order=sales_order)
+--+
+--+    def submit(self):
+--+        """
+--+        主编排方法，按顺序执行提交流程
+--+        """
+--+        try:
+--+            # 步骤 1: 验证前置条件
+--+            self._validate_prerequisites()
+--+
+--+            # 步骤 2: 更新前置文档状态
+--+            self._update_prevdoc_status()
+--+
+--+            # 步骤 3: 检查信用额度
+--+            self._check_credit_limit()
+--+
+--+            # 步骤 4: 库存预留（添加回滚）
+--+            self._reserve_stock()
+--+
+--+            # 步骤 5: 更新库存预留数量
+--+            self._update_reserved_qty()
+--+
+--+            # 步骤 6: 审批控制
+--+            self._validate_approving_authority()
+--+
+--+            # 步骤 7: 更新项目
+--+            self._update_project()
+--+
+--+            # 步骤 8: 更新一揽子订单
+--+            self._update_blanket_order()
+--+
+--+            # 步骤 9: 会计处理（添加回滚）
+--+            self._process_accounting()
+--+
+--+            # 步骤 10: 更新关联文档
+--+            self._update_linked_doc()
+--+
+--+            # 步骤 11: 更新优惠券
+--+            self._update_coupon_code()
+--+
+--+            # 步骤 12: 发送通知
+--+            self._send_notifications()
+--+
+--+            return True
+--+
+--+        except Exception as e:
+--+            # 发生错误时执行回滚
+--+            self._rollback()
+--+            frappe.log_error(f"Sales Order submission failed: {str(e)}")
+--+            raise
+--+
+--+    def _validate_prerequisites(self):
+--+        """验证前置条件"""
+--+        from erpnext.selling.doctype.sales_order.sales_order import check_modified_date
+--+        check_modified_date(self.sales_order)
+--+
+--+    def _update_prevdoc_status(self):
+--+        """更新前置文档状态"""
+--+        self.sales_order.update_prevdoc_status()
+--+
+--+    def _check_credit_limit(self):
+--+        """检查信用额度"""
+--+        self.sales_order.check_credit_limit()
+--+
+--+    def _reserve_stock(self):
+--+        """库存预留 - 使用领域服务"""
+--+        from erpnext.stock.services.stock_reservation_service import StockReservationService
+--+
+--+        if self.sales_order.get("reserve_stock") and not self.sales_order.get("is_subcontracted"):
+--+            try:
+--+                reservation_service = StockReservationService()
+--+                result = reservation_service.reserve_for_sales_order(self.sales_order)
+--+                self.context.stock_reservation_result = result
+--+
+--+                # 注册回滚步骤
+--+                self.context.rollback_steps.append(
+--+                    lambda: reservation_service.cancel_reservation_for_sales_order(self.sales_order)
+--+                )
+--+
+--+            except Exception as e:
+--+                self.context.errors.append(f"Stock reservation failed: {str(e)}")
+--+                raise
+--+
+--+    def _update_reserved_qty(self):
+--+        """更新库存预留数量"""
+--+        self.sales_order.update_reserved_qty()
+--+
+--+    def _validate_approving_authority(self):
+--+        """验证审批权限"""
+--+        if hasattr(frappe, "get_cached_doc"):
+--+            authorization_control = frappe.get_cached_doc("Authorization Control")
+--+            if hasattr(authorization_control, "validate_approving_authority"):
+--+                authorization_control.validate_approving_authority(
+--+                    self.sales_order.doctype, 
+--+                    self.sales_order.company, 
+--+                    self.sales_order.base_grand_total, 
+--+                    self.sales_order
+--+                )
+--+
+--+    def _update_project(self):
+--+        """更新项目"""
+--+        self.sales_order.update_project()
+--+
+--+    def _update_blanket_order(self):
+--+        """更新一揽子订单"""
+--+        self.sales_order.update_blanket_order()
+--+
+--+    def _process_accounting(self):
+--+        """会计处理 - 这里可以扩展为完整的会计领域服务"""
+--+        # 目前会计处理在 ERPNext 中更多是在 Sales Invoice 阶段
+--+        # 这里可以预留位置，为未来的会计处理扩展
+--+        pass
+--+
+--+    def _update_linked_doc(self):
+--+        """更新关联文档"""
+--+        if hasattr(self.sales_order, 'update_linked_doc'):
+--+            self.sales_order.update_linked_doc(
+--+                self.sales_order.doctype, 
+--+                self.sales_order.name, 
+--+                self.sales_order.inter_company_order_reference
+--+            )
+--+        else:
+--+            from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
+--+            update_linked_doc(
+--+                self.sales_order.doctype, 
+--+                self.sales_order.name, 
+--+                self.sales_order.inter_company_order_reference
+--+            )
+--+
+--+    def _update_coupon_code(self):
+--+        """更新优惠券"""
+--+        if self.sales_order.coupon_code:
+--+            try:
+--+                from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--+                update_coupon_code_count(self.sales_order.coupon_code, "used")
+--+
+--+                # 注册回滚步骤
+--+                self.context.rollback_steps.append(
+--+                    lambda: update_coupon_code_count(self.sales_order.coupon_code, "cancelled")
+--+                )
+--+            except Exception as e:
+--+                self.context.errors.append(f"Coupon code update failed: {str(e)}")
+--+
+--+    def _send_notifications(self):
+--+        """发送通知 - 可以通过事件驱动实现"""
+--+        # 这里可以触发事件，让通知系统异步处理
+--+        frappe.publish_realtime(
+--+            "sales_order_submitted",
+--+            {
+--+                "name": self.sales_order.name,
+--+                "customer": self.sales_order.customer,
+--+                "company": self.sales_order.company
+--+            }
+--+        )
+--+
+--+    def _rollback(self):
+--+        """执行回滚操作"""
+--+        frappe.log_error(f"Rolling back Sales Order {self.sales_order.name} submission")
+--+
+--+        # 按相反顺序执行回滚步骤
+--+        for rollback_step in reversed(self.context.rollback_steps):
+--+            try:
+--+                rollback_step()
+--+            except Exception as e:
+--+                frappe.log_error(f"Rollback step failed: {str(e)}")
+--+
+--+        # 记录所有错误
+--+        if self.context.errors:
+--+            frappe.log_error(f"Sales Order submission errors: {', '.join(self.context.errors)}")
+--diff --git a/erpnext/selling/services/transaction_manager.py b/erpnext/selling/services/transaction_manager.py
+--new file mode 100644
+--index 0000000000..269afabe92
+----- /dev/null
+--+++ b/erpnext/selling/services/transaction_manager.py
+--@@ -0,0 +1,159 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+import frappe
+--+from frappe import _
+--+from typing import List, Callable, Optional
+--+from dataclasses import dataclass, field
+--+
+--+
+--+@dataclass
+--+class TransactionStep:
+--+    """事务步骤"""
+--+    name: str
+--+    execute: Callable
+--+    rollback: Optional[Callable] = None
+--+    executed: bool = False
+--+    success: bool = False
+--+
+--+
+--+@dataclass
+--+class TransactionContext:
+--+    """事务上下文"""
+--+    steps: List[TransactionStep] = field(default_factory=list)
+--+    current_step: int = 0
+--+    error: Optional[Exception] = None
+--+
+--+
+--+class TransactionManager:
+--+    """
+--+    事务管理器 - 提供 Sagas 模式的实现
+--+    用于处理分布式事务的补偿/回滚
+--+    """
+--+
+--+    def __init__(self, name: str = "SalesOrderTransaction"):
+--+        self.name = name
+--+        self.context = TransactionContext()
+--+
+--+    def add_step(
+--+        self,
+--+        name: str,
+--+        execute_func: Callable,
+--+        rollback_func: Optional[Callable] = None
+--+    ) -> 'TransactionManager':
+--+        """
+--+        添加事务步骤
+--+        
+--+        Args:
+--+            name: 步骤名称
+--+            execute_func: 执行函数
+--+            rollback_func: 回滚函数（可选）
+--+        """
+--+        step = TransactionStep(
+--+            name=name,
+--+            execute=execute_func,
+--+            rollback=rollback_func
+--+        )
+--+        self.context.steps.append(step)
+--+        return self
+--+
+--+    def execute(self) -> bool:
+--+        """
+--+        执行所有事务步骤
+--+        失败时自动执行已完成步骤的回滚
+--+        """
+--+        frappe.log_error(f"Starting transaction: {self.name}")
+--+
+--+        for i, step in enumerate(self.context.steps):
+--+            self.context.current_step = i
+--+
+--+            try:
+--+                frappe.log_error(f"Executing step: {step.name}")
+--+                step.execute()
+--+                step.executed = True
+--+                step.success = True
+--+                frappe.log_error(f"Step completed: {step.name}")
+--+
+--+            except Exception as e:
+--+                step.success = False
+--+                self.context.error = e
+--+                frappe.log_error(f"Step failed: {step.name}, Error: {str(e)}")
+--+
+--+                # 执行回滚
+--+                self._rollback()
+--+                raise
+--+
+--+        frappe.log_error(f"Transaction completed successfully: {self.name}")
+--+        return True
+--+
+--+    def _rollback(self):
+--+        """
+--+        执行回滚操作 - 按相反顺序回滚已成功执行的步骤
+--+        """
+--+        frappe.log_error(f"Starting rollback for transaction: {self.name}")
+--+
+--+        # 按相反顺序回滚已成功执行的步骤
+--+        for step in reversed(self.context.steps[:self.context.current_step + 1]):
+--+            if step.executed and step.success and step.rollback:
+--+                try:
+--+                    frappe.log_error(f"Rolling back step: {step.name}")
+--+                    step.rollback()
+--+                    frappe.log_error(f"Step rolled back: {step.name}")
+--+                except Exception as e:
+--+                    # 回滚失败时记录日志但继续尝试其他回滚
+--+                    frappe.log_error(
+--+                        f"Failed to rollback step: {step.name}, Error: {str(e)}"
+--+                    )
+--+
+--+        frappe.log_error(f"Rollback completed for transaction: {self.name}")
+--+
+--+    def get_status(self) -> dict:
+--+        """获取事务状态"""
+--+        return {
+--+            "transaction_name": self.name,
+--+            "total_steps": len(self.context.steps),
+--+            "current_step": self.context.current_step,
+--+            "steps": [
+--+                {
+--+                    "name": step.name,
+--+                    "executed": step.executed,
+--+                    "success": step.success
+--+                }
+--+                for step in self.context.steps
+--+            ],
+--+            "error": str(self.context.error) if self.context.error else None
+--+        }
+--+
+--+
+--+def create_sales_order_transaction(sales_order) -> TransactionManager:
+--+    """
+--+    为 Sales Order 创建事务管理器
+--+    """
+--+    from erpnext.stock.services import StockReservationService
+--+
+--+    transaction = TransactionManager("SalesOrderSubmit")
+--+
+--+    reservation_service = StockReservationService()
+--+
+--+    # 步骤 1: 库存预留
+--+    transaction.add_step(
+--+        name="StockReservation",
+--+        execute_func=lambda: reservation_service.reserve_for_sales_order(sales_order) 
+--+            if sales_order.get("reserve_stock") and not sales_order.get("is_subcontracted") 
+--+            else None,
+--+        rollback_func=lambda: reservation_service.cancel_reservation_for_sales_order(sales_order)
+--+    )
+--+
+--+    # 步骤 2: 优惠券更新
+--+    if sales_order.coupon_code:
+--+        from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--+        
+--+        transaction.add_step(
+--+            name="CouponUpdate",
+--+            execute_func=lambda: update_coupon_code_count(sales_order.coupon_code, "used"),
+--+            rollback_func=lambda: update_coupon_code_count(sales_order.coupon_code, "cancelled")
+--+        )
+--+
+--+    # 可以继续添加更多步骤...
+--+
+--+    return transaction
+--diff --git a/erpnext/stock/services/__init__.py b/erpnext/stock/services/__init__.py
+--new file mode 100644
+--index 0000000000..c4d29cc83d
+----- /dev/null
+--+++ b/erpnext/stock/services/__init__.py
+--@@ -0,0 +1,12 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+from erpnext.stock.services.stock_reservation_service import (
+--+    StockReservationService,
+--+    ReservationResult,
+--+)
+--+
+--+__all__ = [
+--+    "StockReservationService",
+--+    "ReservationResult",
+--+]
+--diff --git a/erpnext/stock/services/stock_reservation_service.py b/erpnext/stock/services/stock_reservation_service.py
+--new file mode 100644
+--index 0000000000..35a7647092
+----- /dev/null
+--+++ b/erpnext/stock/services/stock_reservation_service.py
+--@@ -0,0 +1,137 @@
+--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--+# License: GNU General Public License v3. See license.txt
+--+
+--+import frappe
+--+from frappe import _
+--+from typing import Dict, List, Optional
+--+from dataclasses import dataclass
+--+
+--+
+--+@dataclass
+--+class ReservationResult:
+--+    success: bool
+--+    reservation_entries: List[str] = None
+--+    error_message: Optional[str] = None
+--+
+--+    def __post_init__(self):
+--+        self.reservation_entries = self.reservation_entries or []
+--+
+--+
+--+class StockReservationService:
+--+    """
+--+    库存预留领域服务
+--+    封装所有与库存预留相关的业务逻辑
+--+    """
+--+
+--+    def reserve_for_sales_order(self, sales_order: object) -> ReservationResult:
+--+        """
+--+        为 Sales Order 预留库存
+--+        """
+--+        result = ReservationResult(success=False)
+--+
+--+        try:
+--+            # 调用原有的创建库存预留条目的方法
+--+            reservation_entries = self._create_reservation_entries(sales_order)
+--+            
+--+            result.reservation_entries = reservation_entries
+--+            result.success = True
+--+
+--+            frappe.msgprint(_("Stock Reservation Entries Created"), alert=True, indicator="green")
+--+
+--+        except Exception as e:
+--+            result.error_message = str(e)
+--+            frappe.log_error(f"Stock reservation failed for Sales Order {sales_order.name}: {str(e)}")
+--+            raise
+--+
+--+        return result
+--+
+--+    def cancel_reservation_for_sales_order(self, sales_order: object) -> None:
+--+        """
+--+        取消 Sales Order 的库存预留
+--+        """
+--+        try:
+--+            # 调用原有的取消库存预留条目的方法
+--+            if hasattr(sales_order, 'cancel_stock_reservation_entries'):
+--+                sales_order.cancel_stock_reservation_entries(notify=False)
+--+            else:
+--+                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--+                    cancel_stock_reservation_entries,
+--+                )
+--+                cancel_stock_reservation_entries(
+--+                    voucher_type=sales_order.doctype, 
+--+                    voucher_no=sales_order.name,
+--+                    notify=False
+--+                )
+--+
+--+            frappe.msgprint(_("Stock Reservation Entries Cancelled"), alert=True, indicator="orange")
+--+
+--+        except Exception as e:
+--+            frappe.log_error(f"Failed to cancel stock reservation for Sales Order {sales_order.name}: {str(e)}")
+--+            # 取消操作失败不应该阻止回滚，只是记录日志
+--+
+--+    def _create_reservation_entries(self, sales_order: object) -> List[str]:
+--+        """
+--+        创建库存预留条目
+--+        """
+--+        reservation_entries = []
+--+
+--+        # 首先尝试直接调用 Sales Order 的方法
+--+        if hasattr(sales_order, 'create_stock_reservation_entries'):
+--+            sales_order.create_stock_reservation_entries(notify=False)
+--+            
+--+            # 获取创建的预留条目
+--+            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--+                StockReservationEntry,
+--+            )
+--+            entries = frappe.get_all(
+--+                "Stock Reservation Entry",
+--+                filters={
+--+                    "voucher_type": sales_order.doctype,
+--+                    "voucher_no": sales_order.name,
+--+                    "docstatus": 1
+--+                },
+--+                pluck="name"
+--+            )
+--+            reservation_entries = entries
+--+
+--+        else:
+--+            # 备用方案：直接从 stock_reservation_entry 模块调用
+--+            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--+                create_stock_reservation_entries_for_sales_order,
+--+            )
+--+            if 'create_stock_reservation_entries_for_sales_order' in globals():
+--+                create_stock_reservation_entries_for_sales_order(sales_order)
+--+
+--+        return reservation_entries
+--+
+--+    def check_available_stock(self, item_code: str, warehouse: str, qty: float, company: str) -> bool:
+--+        """
+--+        检查可用库存
+--+        """
+--+        from erpnext.stock.stock_balance import get_reserved_qty
+--+        
+--+        available_qty = frappe.get_cached_value(
+--+            "Bin", 
+--+            {"item_code": item_code, "warehouse": warehouse}, 
+--+            "actual_qty"
+--+        ) or 0.0
+--+        
+--+        reserved_qty = get_reserved_qty(item_code, warehouse)
+--+        
+--+        return (available_qty - reserved_qty) >= qty
+--+
+--+    def get_reservation_status(self, voucher_type: str, voucher_no: str) -> List[Dict]:
+--+        """
+--+        获取预留状态
+--+        """
+--+        entries = frappe.get_all(
+--+            "Stock Reservation Entry",
+--+            filters={
+--+                "voucher_type": voucher_type,
+--+                "voucher_no": voucher_no,
+--+                "docstatus": ["!=", 2]
+--+            },
+--+            fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty", "status"]
+--+        )
+--+        
+--+        return entries
 -diff --git a/REFACTORING_GUIDE.md b/REFACTORING_GUIDE.md
--new file mode 100644
--index 0000000000..7311acd2a3
----- /dev/null
--+++ b/REFACTORING_GUIDE.md
--@@ -0,0 +1,270 @@
--+# Sales Order 提交流程重构指南
--+
--+## 📋 概述
--+
--+本次重构旨在解决 ERPNext 中 Sales Order 提交时的高耦合问题，通过引入**编排层+领域服务+事件驱动**的三层架构来提高代码的可维护性和可扩展性。
--+
--+---
--+
--+## 🏗️ 重构架构
--+
--+### 三层架构设计
--+
--+```
--+┌─────────────────────────────────────────────────────────┐
--+│                   编排层 (Orchestrator)                  │
--+│              SalesOrderOrchestrator                      │
--+│         唯一的提交流程入口，协调各领域服务                │
--+└─────────────────────────────────────────────────────────┘
--+                          │
--+        ┌─────────────────┼─────────────────┐
--+        │                 │                 │
--+        ▼                 ▼                 ▼
--+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
--+│  库存领域    │  │  会计领域    │  │  通知服务    │
--+│  服务        │  │  服务        │  │  (事件驱动)  │
--+└──────────────┘  └──────────────┘  └──────────────┘
--+```
--+
--+### 关键组件
--+
--+1. **编排层 (`erpnext/selling/services/`)**
--+   - `SalesOrderOrchestrator`: 主编排器
--+   - `TransactionManager`: 事务管理器（Sagas 模式）
--+
--+2. **领域服务 (`erpnext/stock/services/`, `erpnext/accounts/services/`)**
--+   - `StockReservationService`: 库存预留服务
--+   - （待扩展）会计服务等
--+
--+3. **事件处理器 (`erpnext/selling/events/`)**
--+   - 解耦通知等异步操作
--+
--+---
--+
--+## 🚀 迁移步骤
--+
--+### 阶段 1: 基础设施准备（当前已完成）
--+
--+✅ 创建服务目录结构
--+✅ 实现编排器和领域服务
--+✅ 实现事务管理器和回滚机制
--+✅ 创建事件处理器
--+
--+### 阶段 2: 逐步集成（下一步）
--+
--+#### 步骤 1: 备份当前代码
--+```bash
--+# 备份原始的 sales_order.py
--+cp erpnext/selling/doctype/sales_order/sales_order.py \
--+   erpnext/selling/doctype/sales_order/sales_order.py.backup
--+```
--+
--+#### 步骤 2: 修改 SalesOrder.on_submit 方法
--+
--+编辑 `erpnext/selling/doctype/sales_order/sales_order.py`:
--+
--+```python
--+def on_submit(self):
--+    # 新的方式：使用编排器
--+    from erpnext.selling.services import SalesOrderOrchestrator
--+    
--+    orchestrator = SalesOrderOrchestrator(self)
--+    orchestrator.submit()
--+
--+    # 【可选】保留原有逻辑作为降级方案（初期建议保留）
--+    # self._on_submit_legacy()
--+
--+def _on_submit_legacy(self):
--+    # 将原有的 on_submit 代码移到这里
--+    super().update_prevdoc_status()
--+    self.check_credit_limit()
--+    # ... 其他原有代码
--+```
--+
--+#### 步骤 3: 添加特性开关（推荐）
--+
--+在 `Selling Settings` 中添加开关：
--+
--+```python
--+# 在 SalesOrder.on_submit 中
--+use_new_orchestrator = frappe.get_cached_value(
--+    "Selling Settings", 
--+    None, 
--+    "use_new_sales_order_orchestrator"
--+)
--+
--+if use_new_orchestrator:
--+    from erpnext.selling.services import SalesOrderOrchestrator
--+    SalesOrderOrchestrator(self).submit()
--+else:
--+    self._on_submit_legacy()
--+```
--+
--+#### 步骤 4: 逐步迁移 on_cancel
--+
--+类似地，修改 `on_cancel` 方法：
--+
--+```python
--+def on_cancel(self):
--+    from erpnext.selling.events import on_sales_order_cancel
--+    on_sales_order_cancel(self)
--+```
--+
--+### 阶段 3: 优化和完善
--+
--+1. **添加单元测试**
--+2. **性能监控**
--+3. **日志增强**
--+4. **完善错误处理**
--+
--+---
--+
--+## 🔧 关键设计决策
--+
--+### 1. 为什么选择编排器作为唯一入口？
--+
--+**问题**：原代码中 `SalesOrder` 类直接调用多个模块：
--+- `stock` 模块的库存预留
--+- `accounts` 模块的会计处理
--+- `notifications` 模块的通知
--+
--+**解决方案**：
--+- ✅ 单一职责原则：`SalesOrder` 只负责文档本身的业务逻辑
--+- ✅ 降低耦合：各模块通过编排器协调，不直接相互依赖
--+- ✅ 便于测试：可以独立测试编排逻辑
--+
--+### 2. 领域服务 vs 应用服务 vs 事件处理器
--+
--+| 组件类型 | 位置 | 职责 | 示例 |
--+|---------|------|------|------|
--+| **领域服务** | `erpnext/{module}/services/` | 封装纯领域逻辑 | `StockReservationService` |
--+| **应用服务** | `erpnext/selling/services/` | 协调用例流程 | `SalesOrderOrchestrator` |
--+| **事件处理器** | `erpnext/selling/events/` | 解耦异步操作 | 通知发送、审计日志 |
--+
--+### 3. 补偿/回滚机制设计
--+
--+采用 **Sagas 模式**：
--+- 每个事务步骤都有对应的回滚操作
--+- 失败时按相反顺序回滚已成功的步骤
--+- 回滚失败时记录日志但不中断其他回滚
--+
--+```python
--+# 伪代码示例
--+transaction = TransactionManager()
--+transaction.add_step(
--+    name="StockReservation",
--+    execute=reserve_stock,
--+    rollback=cancel_reservation
--+)
--+transaction.add_step(
--+    name="Accounting",
--+    execute=post_to_gl,
--+    rollback=reverse_gl_entry
--+)
--+transaction.execute()
--+```
--+
--+---
--+
--+## 📁 新增文件清单
--+
--+```
--+erpnext/
--+├── selling/
--+│   ├── services/
--+│   │   ├── __init__.py
--+│   │   ├── sales_order_orchestrator.py  # 编排器
--+│   │   └── transaction_manager.py        # 事务管理器
--+│   └── events/
--+│       ├── __init__.py
--+│       └── sales_order_events.py         # 事件处理器
--+└── stock/
--+    └── services/
--+        ├── __init__.py
--+        └── stock_reservation_service.py  # 库存预留服务
--+```
--+
--+---
--+
--+## 🎯 重构收益
--+
--+1. **可维护性提升**
--+   - 职责清晰，易于理解
--+   - 修改某一模块不影响其他模块
--+
--+2. **可测试性提升**
--+   - 可以独立测试各领域服务
--+   - 编排逻辑可以 mock 依赖
--+
--+3. **可扩展性提升**
--+   - 新增业务步骤只需添加新的领域服务
--+   - 事件驱动便于添加新的通知类型
--+
--+4. **数据一致性**
--+   - Sagas 模式保证失败时的正确回滚
--+   - 显式的事务边界
--+
--+---
--+
--+## ⚠️ 注意事项
--+
--+### 迁移风险缓解
--+
--+1. **灰度发布**
--+   - 先在测试环境验证
--+   - 再在生产环境小范围试用
--+   - 最后全量切换
--+
--+2. **降级方案**
--+   - 保留原有代码作为降级方案
--+   - 通过特性开关快速切换
--+
--+3. **监控和日志**
--+   - 增强日志记录
--+   - 监控关键指标（成功率、耗时等）
--+
--+### 向后兼容
--+
--+- ✅ 保持公共 API 不变
--+- ✅ 提供迁移工具
--+- ✅ 支持逐步迁移
--+
--+---
--+
--+## 📊 后续扩展建议
--+
--+1. **会计领域服务**
--+   - 将会计相关逻辑从 `SalesOrder` 中剥离
--+   - 创建 `AccountingService`
--+
--+2. **异步处理**
--+   - 使用 `frappe.enqueue` 处理耗时操作
--+   - 提高响应速度
--+
--+3. **更多文档类型**
--+   - 将相同模式应用到 `Sales Invoice`、`Purchase Order` 等
--+   - 统一架构风格
--+
--+4. **测试覆盖**
--+   - 单元测试：测试各领域服务
--+   - 集成测试：测试编排逻辑
--+   - E2E 测试：完整流程验证
--+
--+---
--+
--+## 🆘 常见问题
--+
--+### Q: 如何回滚到原版本？
--+A: 使用特性开关关闭新编排器，或通过 git 恢复原代码。
--+
--+### Q: 对性能有影响吗？
--+A: 理论上影响很小（增加了一层间接调用），实际性能需要测试验证。如发现问题可以优化。
--+
--+### Q: 其他文档类型是否也需要重构？
--+A: 建议采用相同模式，但可以分阶段进行，优先处理高频使用的文档类型。
--+
--+---
--+
--+## 📞 联系方式
--+
--+如有问题或建议，请联系开发团队。
+-deleted file mode 100644
+-index 7311acd2a3..0000000000
+---- a/REFACTORING_GUIDE.md
+-+++ /dev/null
+-@@ -1,270 +0,0 @@
+--# Sales Order 提交流程重构指南
+--
+--## 📋 概述
+--
+--本次重构旨在解决 ERPNext 中 Sales Order 提交时的高耦合问题，通过引入**编排层+领域服务+事件驱动**的三层架构来提高代码的可维护性和可扩展性。
+--
+-----
+--
+--## 🏗️ 重构架构
+--
+--### 三层架构设计
+--
+--```
+--┌─────────────────────────────────────────────────────────┐
+--│                   编排层 (Orchestrator)                  │
+--│              SalesOrderOrchestrator                      │
+--│         唯一的提交流程入口，协调各领域服务                │
+--└─────────────────────────────────────────────────────────┘
+--                          │
+--        ┌─────────────────┼─────────────────┐
+--        │                 │                 │
+--        ▼                 ▼                 ▼
+--┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+--│  库存领域    │  │  会计领域    │  │  通知服务    │
+--│  服务        │  │  服务        │  │  (事件驱动)  │
+--└──────────────┘  └──────────────┘  └──────────────┘
+--```
+--
+--### 关键组件
+--
+--1. **编排层 (`erpnext/selling/services/`)**
+--   - `SalesOrderOrchestrator`: 主编排器
+--   - `TransactionManager`: 事务管理器（Sagas 模式）
+--
+--2. **领域服务 (`erpnext/stock/services/`, `erpnext/accounts/services/`)**
+--   - `StockReservationService`: 库存预留服务
+--   - （待扩展）会计服务等
+--
+--3. **事件处理器 (`erpnext/selling/events/`)**
+--   - 解耦通知等异步操作
+--
+-----
+--
+--## 🚀 迁移步骤
+--
+--### 阶段 1: 基础设施准备（当前已完成）
+--
+--✅ 创建服务目录结构
+--✅ 实现编排器和领域服务
+--✅ 实现事务管理器和回滚机制
+--✅ 创建事件处理器
+--
+--### 阶段 2: 逐步集成（下一步）
+--
+--#### 步骤 1: 备份当前代码
+--```bash
+--# 备份原始的 sales_order.py
+--cp erpnext/selling/doctype/sales_order/sales_order.py \
+--   erpnext/selling/doctype/sales_order/sales_order.py.backup
+--```
+--
+--#### 步骤 2: 修改 SalesOrder.on_submit 方法
+--
+--编辑 `erpnext/selling/doctype/sales_order/sales_order.py`:
+--
+--```python
+--def on_submit(self):
+--    # 新的方式：使用编排器
+--    from erpnext.selling.services import SalesOrderOrchestrator
+--    
+--    orchestrator = SalesOrderOrchestrator(self)
+--    orchestrator.submit()
+--
+--    # 【可选】保留原有逻辑作为降级方案（初期建议保留）
+--    # self._on_submit_legacy()
+--
+--def _on_submit_legacy(self):
+--    # 将原有的 on_submit 代码移到这里
+--    super().update_prevdoc_status()
+--    self.check_credit_limit()
+--    # ... 其他原有代码
+--```
+--
+--#### 步骤 3: 添加特性开关（推荐）
+--
+--在 `Selling Settings` 中添加开关：
+--
+--```python
+--# 在 SalesOrder.on_submit 中
+--use_new_orchestrator = frappe.get_cached_value(
+--    "Selling Settings", 
+--    None, 
+--    "use_new_sales_order_orchestrator"
+--)
+--
+--if use_new_orchestrator:
+--    from erpnext.selling.services import SalesOrderOrchestrator
+--    SalesOrderOrchestrator(self).submit()
+--else:
+--    self._on_submit_legacy()
+--```
+--
+--#### 步骤 4: 逐步迁移 on_cancel
+--
+--类似地，修改 `on_cancel` 方法：
+--
+--```python
+--def on_cancel(self):
+--    from erpnext.selling.events import on_sales_order_cancel
+--    on_sales_order_cancel(self)
+--```
+--
+--### 阶段 3: 优化和完善
+--
+--1. **添加单元测试**
+--2. **性能监控**
+--3. **日志增强**
+--4. **完善错误处理**
+--
+-----
+--
+--## 🔧 关键设计决策
+--
+--### 1. 为什么选择编排器作为唯一入口？
+--
+--**问题**：原代码中 `SalesOrder` 类直接调用多个模块：
+--- `stock` 模块的库存预留
+--- `accounts` 模块的会计处理
+--- `notifications` 模块的通知
+--
+--**解决方案**：
+--- ✅ 单一职责原则：`SalesOrder` 只负责文档本身的业务逻辑
+--- ✅ 降低耦合：各模块通过编排器协调，不直接相互依赖
+--- ✅ 便于测试：可以独立测试编排逻辑
+--
+--### 2. 领域服务 vs 应用服务 vs 事件处理器
+--
+--| 组件类型 | 位置 | 职责 | 示例 |
+--|---------|------|------|------|
+--| **领域服务** | `erpnext/{module}/services/` | 封装纯领域逻辑 | `StockReservationService` |
+--| **应用服务** | `erpnext/selling/services/` | 协调用例流程 | `SalesOrderOrchestrator` |
+--| **事件处理器** | `erpnext/selling/events/` | 解耦异步操作 | 通知发送、审计日志 |
+--
+--### 3. 补偿/回滚机制设计
+--
+--采用 **Sagas 模式**：
+--- 每个事务步骤都有对应的回滚操作
+--- 失败时按相反顺序回滚已成功的步骤
+--- 回滚失败时记录日志但不中断其他回滚
+--
+--```python
+--# 伪代码示例
+--transaction = TransactionManager()
+--transaction.add_step(
+--    name="StockReservation",
+--    execute=reserve_stock,
+--    rollback=cancel_reservation
+--)
+--transaction.add_step(
+--    name="Accounting",
+--    execute=post_to_gl,
+--    rollback=reverse_gl_entry
+--)
+--transaction.execute()
+--```
+--
+-----
+--
+--## 📁 新增文件清单
+--
+--```
+--erpnext/
+--├── selling/
+--│   ├── services/
+--│   │   ├── __init__.py
+--│   │   ├── sales_order_orchestrator.py  # 编排器
+--│   │   └── transaction_manager.py        # 事务管理器
+--│   └── events/
+--│       ├── __init__.py
+--│       └── sales_order_events.py         # 事件处理器
+--└── stock/
+--    └── services/
+--        ├── __init__.py
+--        └── stock_reservation_service.py  # 库存预留服务
+--```
+--
+-----
+--
+--## 🎯 重构收益
+--
+--1. **可维护性提升**
+--   - 职责清晰，易于理解
+--   - 修改某一模块不影响其他模块
+--
+--2. **可测试性提升**
+--   - 可以独立测试各领域服务
+--   - 编排逻辑可以 mock 依赖
+--
+--3. **可扩展性提升**
+--   - 新增业务步骤只需添加新的领域服务
+--   - 事件驱动便于添加新的通知类型
+--
+--4. **数据一致性**
+--   - Sagas 模式保证失败时的正确回滚
+--   - 显式的事务边界
+--
+-----
+--
+--## ⚠️ 注意事项
+--
+--### 迁移风险缓解
+--
+--1. **灰度发布**
+--   - 先在测试环境验证
+--   - 再在生产环境小范围试用
+--   - 最后全量切换
+--
+--2. **降级方案**
+--   - 保留原有代码作为降级方案
+--   - 通过特性开关快速切换
+--
+--3. **监控和日志**
+--   - 增强日志记录
+--   - 监控关键指标（成功率、耗时等）
+--
+--### 向后兼容
+--
+--- ✅ 保持公共 API 不变
+--- ✅ 提供迁移工具
+--- ✅ 支持逐步迁移
+--
+-----
+--
+--## 📊 后续扩展建议
+--
+--1. **会计领域服务**
+--   - 将会计相关逻辑从 `SalesOrder` 中剥离
+--   - 创建 `AccountingService`
+--
+--2. **异步处理**
+--   - 使用 `frappe.enqueue` 处理耗时操作
+--   - 提高响应速度
+--
+--3. **更多文档类型**
+--   - 将相同模式应用到 `Sales Invoice`、`Purchase Order` 等
+--   - 统一架构风格
+--
+--4. **测试覆盖**
+--   - 单元测试：测试各领域服务
+--   - 集成测试：测试编排逻辑
+--   - E2E 测试：完整流程验证
+--
+-----
+--
+--## 🆘 常见问题
+--
+--### Q: 如何回滚到原版本？
+--A: 使用特性开关关闭新编排器，或通过 git 恢复原代码。
+--
+--### Q: 对性能有影响吗？
+--A: 理论上影响很小（增加了一层间接调用），实际性能需要测试验证。如发现问题可以优化。
+--
+--### Q: 其他文档类型是否也需要重构？
+--A: 建议采用相同模式，但可以分阶段进行，优先处理高频使用的文档类型。
+--
+-----
+--
+--## 📞 联系方式
+--
+--如有问题或建议，请联系开发团队。
+-diff --git a/erpnext/accounts/doctype/pricing_rule/utils.py b/erpnext/accounts/doctype/pricing_rule/utils.py
+-index 82f269d6da..e607baab05 100644
+---- a/erpnext/accounts/doctype/pricing_rule/utils.py
+-+++ b/erpnext/accounts/doctype/pricing_rule/utils.py
+-@@ -756,14 +756,6 @@ def validate_coupon_code(coupon_name):
+- 		frappe.throw(_("Sorry, this coupon code is no longer valid"))
+- 
+- 
+--def update_coupon_code_count(coupon_name, transaction_type):
+--	coupon = frappe.get_doc("Coupon Code", coupon_name)
+--	if coupon:
+--		if transaction_type == "used":
+--			if not coupon.maximum_use:
+--				coupon.used = coupon.used + 1
+--				coupon.save(ignore_permissions=True)
+--			elif coupon.used < coupon.maximum_use:
+- 				coupon.used = coupon.used + 1
+- 				coupon.save(ignore_permissions=True)
+- 			else:
+-diff --git a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
+-index db1e56a2b7..99f75fbe73 100644
+---- a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
+-+++ b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
+-@@ -2485,14 +2485,6 @@ def update_linked_doc(doctype, name, inter_company_reference):
+- 		frappe.db.set_value(doctype, inter_company_reference, ref_field, name)
+- 
+- 
+--def unlink_inter_company_doc(doctype, name, inter_company_reference):
+--	if doctype in ["Sales Invoice", "Purchase Invoice"]:
+--		ref_doc = "Purchase Invoice" if doctype == "Sales Invoice" else "Sales Invoice"
+--		ref_field = "inter_company_invoice_reference"
+--	else:
+--		ref_doc = "Purchase Order" if doctype == "Sales Order" else "Sales Order"
+--		ref_field = "inter_company_order_reference"
+--
+- 	if inter_company_reference:
+- 		frappe.db.set_value(doctype, name, ref_field, "")
+- 		frappe.db.set_value(ref_doc, inter_company_reference, ref_field, "")
+-diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+-index bba172e498..7fcfe9ca93 100644
+---- a/erpnext/hooks.py
+-+++ b/erpnext/hooks.py
+-@@ -383,18 +383,6 @@ doc_events = {
+- 	"Event": {
+- 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
+- 	},
+--	"Sales Invoice": {
+--		"on_submit": [
+--			"erpnext.regional.italy.utils.sales_invoice_on_submit",
+--		],
+--		"on_cancel": [
+--			"erpnext.regional.italy.utils.sales_invoice_on_cancel",
+--		],
+--		"on_trash": "erpnext.regional.check_deletion_permission",
+--	},
+--	"Purchase Invoice": {
+--		"validate": [
+--			"erpnext.regional.united_arab_emirates.utils.update_grand_total_for_rcm",
+- 			"erpnext.regional.united_arab_emirates.utils.validate_returns",
+- 		]
+- 	},
 -diff --git a/erpnext/hooks_refactoring_example.py b/erpnext/hooks_refactoring_example.py
--new file mode 100644
--index 0000000000..a087735412
----- /dev/null
--+++ b/erpnext/hooks_refactoring_example.py
--@@ -0,0 +1,47 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+#
--+# hooks.py 更新示例 - 展示如何添加新的事件钩子
--+# 【注意】这是一个示例文件，不要直接替换原文件！
--+# 将 doc_events 部分的修改应用到实际的 hooks.py 中
+-deleted file mode 100644
+-index a087735412..0000000000
+---- a/erpnext/hooks_refactoring_example.py
+-+++ /dev/null
+-@@ -1,47 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--#
+--# hooks.py 更新示例 - 展示如何添加新的事件钩子
+--# 【注意】这是一个示例文件，不要直接替换原文件！
+--# 将 doc_events 部分的修改应用到实际的 hooks.py 中
+--
+--# ... (保持 hooks.py 的其他部分不变)
+--
+--doc_events = {
+--    "*": {
+--        "validate": [
+--            "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
+--            "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
+--        ],
+--    },
+--    tuple(period_closing_doctypes): {
+--        "validate": "erpnext.accounts.doctype.accounting_period.accounting_period.validate_accounting_period_on_doc_save",
+--    },
+--    tuple(pre_submit_validation_doctypes): {
+--        "validate": "erpnext.accounts.utils.pre_submit_validation",
+--    },
+--    
+--    # ========================================================================
+--    # 新增：Sales Order 事件钩子
+--    # ========================================================================
+--    "Sales Order": {
+--        "on_submit": [
+--            # 可选：如果使用事件钩子而不是直接在类中调用
+--            # "erpnext.selling.events.sales_order_events.on_sales_order_submit",
+--        ],
+--        "on_cancel": [
+--            # 可选：如果使用事件钩子而不是直接在类中调用
+--            # "erpnext.selling.events.sales_order_events.on_sales_order_cancel",
+--        ],
+--        "on_update_after_submit": [],
+--    },
+--    
+--    "Stock Entry": {
+--        "on_submit": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
+--        "on_cancel": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
+--    },
+--    
+--    # ... (保持 hooks.py 的其他部分不变)
+--}
+--
+--# ... (保持 hooks.py 的其他部分不变)
+-diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+-index 4d68a79e62..730fe1a861 100755
+---- a/erpnext/selling/doctype/sales_order/sales_order.py
+-+++ b/erpnext/selling/doctype/sales_order/sales_order.py
+-@@ -17,6 +17,8 @@ from frappe.query_builder.functions import Sum
+- from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
+- 
+- from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
+-+	unlink_inter_company_doc,
+-+	update_linked_doc,
+- 	unlink_inter_company_doc,
+- 	update_linked_doc,
+- 	validate_inter_company_party,
+-@@ -517,8 +519,6 @@ class SalesOrder(SellingController):
+- 		self.update_project()
+- 		self.update_prevdoc_status("submit")
+- 
+--		self.update_blanket_order()
+--
+- 		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
+- 		if self.coupon_code:
+- 			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+-@@ -528,6 +528,8 @@ class SalesOrder(SellingController):
+- 		if self.get("reserve_stock") and not self.get("is_subcontracted"):
+- 			self.create_stock_reservation_entries()
+- 
+-+		self.update_blanket_order()
 -+
--+# ... (保持 hooks.py 的其他部分不变)
--+
--+doc_events = {
--+    "*": {
--+        "validate": [
--+            "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
--+            "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
--+        ],
--+    },
--+    tuple(period_closing_doctypes): {
--+        "validate": "erpnext.accounts.doctype.accounting_period.accounting_period.validate_accounting_period_on_doc_save",
--+    },
--+    tuple(pre_submit_validation_doctypes): {
--+        "validate": "erpnext.accounts.utils.pre_submit_validation",
--+    },
--+    
--+    # ========================================================================
--+    # 新增：Sales Order 事件钩子
--+    # ========================================================================
--+    "Sales Order": {
--+        "on_submit": [
--+            # 可选：如果使用事件钩子而不是直接在类中调用
--+            # "erpnext.selling.events.sales_order_events.on_sales_order_submit",
--+        ],
--+        "on_cancel": [
--+            # 可选：如果使用事件钩子而不是直接在类中调用
--+            # "erpnext.selling.events.sales_order_events.on_sales_order_cancel",
--+        ],
--+        "on_update_after_submit": [],
--+    },
--+    
--+    "Stock Entry": {
--+        "on_submit": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
--+        "on_cancel": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
--+    },
--+    
--+    # ... (保持 hooks.py 的其他部分不变)
--+}
--+
--+# ... (保持 hooks.py 的其他部分不变)
+- 	def delete_removed_delivery_schedule_items(self):
+- 		items = [d.name for d in self.get("items")]
+- 		doctype = frappe.qb.DocType("Delivery Schedule Item")
 -diff --git a/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py b/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
--new file mode 100644
--index 0000000000..e35f1ee844
----- /dev/null
--+++ b/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
--@@ -0,0 +1,153 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+#
--+# 重构后的 Sales Order 示例 - 展示如何使用新的编排器
--+# 【注意】这是一个示例文件，不要直接替换原文件！
--+
--+import frappe
--+from frappe import _
--+from erpnext.controllers.selling_controller import SellingController
--+
--+
--+class SalesOrder(SellingController):
--+    """
--+    重构后的 Sales Order 类
--+    将复杂的提交流程委托给编排器
--+    """
--+
--+    def on_submit(self):
--+        """
--+        提交方法 - 使用新的编排器
--+        """
--+        # 检查是否启用新编排器
--+        use_new_orchestrator = self._should_use_new_orchestrator()
--+
--+        if use_new_orchestrator:
--+            self._on_submit_new()
--+        else:
--+            self._on_submit_legacy()
--+
--+    def _on_submit_new(self):
--+        """
--+        新的提交流程 - 使用编排器
--+        """
--+        try:
--+            from erpnext.selling.services import SalesOrderOrchestrator
--+
--+            orchestrator = SalesOrderOrchestrator(self)
--+            orchestrator.submit()
--+
--+        except Exception as e:
--+            frappe.log_error(f"New orchestrator failed, falling back to legacy: {str(e)}")
--+            self._on_submit_legacy()
--+
--+    def _on_submit_legacy(self):
--+        """
--+        原有的提交流程 - 保留作为降级方案
--+        """
--+        super().update_prevdoc_status()
--+        self.check_credit_limit()
--+        self.update_reserved_qty()
--+        self.delete_removed_delivery_schedule_items()
--+
--+        frappe.get_cached_doc("Authorization Control").validate_approving_authority(
--+            self.doctype, self.company, self.base_grand_total, self
--+        )
--+        self.update_project()
--+        self.update_prevdoc_status("submit")
--+
--+        self.update_blanket_order()
--+
--+        from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
--+        update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
--+        
--+        if self.coupon_code:
--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--+            update_coupon_code_count(self.coupon_code, "used")
--+
--+        if self.get("reserve_stock") and not self.get("is_subcontracted"):
--+            self.create_stock_reservation_entries()
--+
--+    def on_cancel(self):
--+        """
--+        取消方法
--+        """
--+        use_new_orchestrator = self._should_use_new_orchestrator()
--+
--+        if use_new_orchestrator:
--+            self._on_cancel_new()
--+        else:
--+            self._on_cancel_legacy()
--+
--+    def _on_cancel_new(self):
--+        """
--+        新的取消流程
--+        """
--+        try:
--+            from erpnext.selling.events import on_sales_order_cancel
--+            on_sales_order_cancel(self)
--+        except Exception as e:
--+            frappe.log_error(f"New cancel flow failed, falling back to legacy: {str(e)}")
--+            self._on_cancel_legacy()
--+
--+    def _on_cancel_legacy(self):
--+        """
--+        原有的取消流程
--+        """
--+        self.ignore_linked_doctypes = (
--+            "GL Entry",
--+            "Stock Ledger Entry",
--+            "Payment Ledger Entry",
--+            "Advance Payment Ledger Entry",
--+            "Unreconcile Payment",
--+            "Unreconcile Payment Entries",
--+        )
--+        super().on_cancel()
--+        super().update_prevdoc_status()
--+        if self.status == "Closed":
--+            frappe.throw(_("Closed order cannot be cancelled. Unclose to cancel."))
--+
--+        self.delete_delivery_schedule_items()
--+        self.check_nextdoc_docstatus()
--+        self.update_reserved_qty()
--+        self.update_project()
--+        self.update_prevdoc_status("cancel")
--+
--+        self.db_set("status", "Cancelled")
--+
--+        self.update_blanket_order()
--+        self.cancel_stock_reservation_entries()
--+
--+        from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
--+        unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
--+        
--+        if self.coupon_code:
--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--+            update_coupon_code_count(self.coupon_code, "cancelled")
--+
--+    def _should_use_new_orchestrator(self) -> bool:
--+        """
--+        检查是否应该使用新编排器
--+        可以通过配置或特性开关控制
--+        """
--+        # 方式 1: 通过系统设置
--+        try:
--+            return frappe.get_cached_value(
--+                "Selling Settings", 
--+                None, 
--+                "use_new_sales_order_orchestrator"
--+            ) or False
--+        except Exception:
--+            pass
--+
--+        # 方式 2: 通过全局标志
--+        if hasattr(frappe.local, 'flags') and frappe.local.flags.use_new_orchestrator:
--+            return True
--+
--+        # 方式 3: 通过环境变量
--+        import os
--+        if os.getenv('ERP_USE_NEW_ORCHESTRATOR') == '1':
--+            return True
--+
--+        # 默认使用旧方式（安全起见）
--+        return False
+-deleted file mode 100644
+-index e35f1ee844..0000000000
+---- a/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
+-+++ /dev/null
+-@@ -1,153 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--#
+--# 重构后的 Sales Order 示例 - 展示如何使用新的编排器
+--# 【注意】这是一个示例文件，不要直接替换原文件！
+--
+--import frappe
+--from frappe import _
+--from erpnext.controllers.selling_controller import SellingController
+--
+--
+--class SalesOrder(SellingController):
+--    """
+--    重构后的 Sales Order 类
+--    将复杂的提交流程委托给编排器
+--    """
+--
+--    def on_submit(self):
+--        """
+--        提交方法 - 使用新的编排器
+--        """
+--        # 检查是否启用新编排器
+--        use_new_orchestrator = self._should_use_new_orchestrator()
+--
+--        if use_new_orchestrator:
+--            self._on_submit_new()
+--        else:
+--            self._on_submit_legacy()
+--
+--    def _on_submit_new(self):
+--        """
+--        新的提交流程 - 使用编排器
+--        """
+--        try:
+--            from erpnext.selling.services import SalesOrderOrchestrator
+--
+--            orchestrator = SalesOrderOrchestrator(self)
+--            orchestrator.submit()
+--
+--        except Exception as e:
+--            frappe.log_error(f"New orchestrator failed, falling back to legacy: {str(e)}")
+--            self._on_submit_legacy()
+--
+--    def _on_submit_legacy(self):
+--        """
+--        原有的提交流程 - 保留作为降级方案
+--        """
+--        super().update_prevdoc_status()
+--        self.check_credit_limit()
+--        self.update_reserved_qty()
+--        self.delete_removed_delivery_schedule_items()
+--
+--        frappe.get_cached_doc("Authorization Control").validate_approving_authority(
+--            self.doctype, self.company, self.base_grand_total, self
+--        )
+--        self.update_project()
+--        self.update_prevdoc_status("submit")
+--
+--        self.update_blanket_order()
+--
+--        from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
+--        update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
+--        
+--        if self.coupon_code:
+--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--            update_coupon_code_count(self.coupon_code, "used")
+--
+--        if self.get("reserve_stock") and not self.get("is_subcontracted"):
+--            self.create_stock_reservation_entries()
+--
+--    def on_cancel(self):
+--        """
+--        取消方法
+--        """
+--        use_new_orchestrator = self._should_use_new_orchestrator()
+--
+--        if use_new_orchestrator:
+--            self._on_cancel_new()
+--        else:
+--            self._on_cancel_legacy()
+--
+--    def _on_cancel_new(self):
+--        """
+--        新的取消流程
+--        """
+--        try:
+--            from erpnext.selling.events import on_sales_order_cancel
+--            on_sales_order_cancel(self)
+--        except Exception as e:
+--            frappe.log_error(f"New cancel flow failed, falling back to legacy: {str(e)}")
+--            self._on_cancel_legacy()
+--
+--    def _on_cancel_legacy(self):
+--        """
+--        原有的取消流程
+--        """
+--        self.ignore_linked_doctypes = (
+--            "GL Entry",
+--            "Stock Ledger Entry",
+--            "Payment Ledger Entry",
+--            "Advance Payment Ledger Entry",
+--            "Unreconcile Payment",
+--            "Unreconcile Payment Entries",
+--        )
+--        super().on_cancel()
+--        super().update_prevdoc_status()
+--        if self.status == "Closed":
+--            frappe.throw(_("Closed order cannot be cancelled. Unclose to cancel."))
+--
+--        self.delete_delivery_schedule_items()
+--        self.check_nextdoc_docstatus()
+--        self.update_reserved_qty()
+--        self.update_project()
+--        self.update_prevdoc_status("cancel")
+--
+--        self.db_set("status", "Cancelled")
+--
+--        self.update_blanket_order()
+--        self.cancel_stock_reservation_entries()
+--
+--        from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
+--        unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
+--        
+--        if self.coupon_code:
+--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--            update_coupon_code_count(self.coupon_code, "cancelled")
+--
+--    def _should_use_new_orchestrator(self) -> bool:
+--        """
+--        检查是否应该使用新编排器
+--        可以通过配置或特性开关控制
+--        """
+--        # 方式 1: 通过系统设置
+--        try:
+--            return frappe.get_cached_value(
+--                "Selling Settings", 
+--                None, 
+--                "use_new_sales_order_orchestrator"
+--            ) or False
+--        except Exception:
+--            pass
+--
+--        # 方式 2: 通过全局标志
+--        if hasattr(frappe.local, 'flags') and frappe.local.flags.use_new_orchestrator:
+--            return True
+--
+--        # 方式 3: 通过环境变量
+--        import os
+--        if os.getenv('ERP_USE_NEW_ORCHESTRATOR') == '1':
+--            return True
+--
+--        # 默认使用旧方式（安全起见）
+--        return False
 -diff --git a/erpnext/selling/events/__init__.py b/erpnext/selling/events/__init__.py
--new file mode 100644
--index 0000000000..46d036b26e
----- /dev/null
--+++ b/erpnext/selling/events/__init__.py
--@@ -0,0 +1,14 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+from erpnext.selling.events.sales_order_events import (
--+    on_sales_order_submit,
--+    on_sales_order_cancel,
--+    handle_sales_order_notification,
--+)
--+
--+__all__ = [
--+    "on_sales_order_submit",
--+    "on_sales_order_cancel",
--+    "handle_sales_order_notification",
--+]
+-deleted file mode 100644
+-index 46d036b26e..0000000000
+---- a/erpnext/selling/events/__init__.py
+-+++ /dev/null
+-@@ -1,14 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--from erpnext.selling.events.sales_order_events import (
+--    on_sales_order_submit,
+--    on_sales_order_cancel,
+--    handle_sales_order_notification,
+--)
+--
+--__all__ = [
+--    "on_sales_order_submit",
+--    "on_sales_order_cancel",
+--    "handle_sales_order_notification",
+--]
 -diff --git a/erpnext/selling/events/sales_order_events.py b/erpnext/selling/events/sales_order_events.py
--new file mode 100644
--index 0000000000..047cbfeadd
----- /dev/null
--+++ b/erpnext/selling/events/sales_order_events.py
--@@ -0,0 +1,120 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+import frappe
--+from frappe import _
--+from typing import Dict
--+
--+
--+def on_sales_order_submit(doc, method=None):
--+    """
--+    Sales Order 提交时的事件处理器
--+    通过 ERPNext 的 doc_events 钩子调用
--+    """
--+    try:
--+        from erpnext.selling.services import SalesOrderOrchestrator
--+
--+        # 使用编排器处理提交流程
--+        orchestrator = SalesOrderOrchestrator(doc)
--+        orchestrator.submit()
--+
--+        frappe.log_error(f"Sales Order {doc.name} submitted via orchestrator")
--+
--+    except Exception as e:
--+        frappe.log_error(f"Error in on_sales_order_submit: {str(e)}")
--+        raise
--+
--+
--+def on_sales_order_cancel(doc, method=None):
--+    """
--+    Sales Order 取消时的事件处理器
--+    """
--+    try:
--+        # 取消库存预留
--+        from erpnext.stock.services import StockReservationService
--+
--+        reservation_service = StockReservationService()
--+        reservation_service.cancel_reservation_for_sales_order(doc)
--+
--+        # 清理其他关联资源
--+        _cleanup_on_cancel(doc)
--+
--+        frappe.log_error(f"Sales Order {doc.name} cancelled successfully")
--+
--+    except Exception as e:
--+        frappe.log_error(f"Error in on_sales_order_cancel: {str(e)}")
--+
--+
--+def _cleanup_on_cancel(doc):
--+    """
--+    取消时的清理工作
--+    """
--+    # 恢复优惠券
--+    if doc.coupon_code:
--+        try:
--+            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--+            update_coupon_code_count(doc.coupon_code, "cancelled")
--+        except Exception as e:
--+            frappe.log_error(f"Failed to revert coupon code: {str(e)}")
--+
--+
--+@frappe.whitelist()
--+def handle_sales_order_notification(event_data: Dict):
--+    """
--+    处理 Sales Order 相关的通知（异步）
--+    """
--+    event_type = event_data.get("event_type")
--+    sales_order_name = event_data.get("sales_order_name")
--+
--+    if not sales_order_name:
--+        return
--+
--+    # 根据事件类型发送不同的通知
--+    if event_type == "submitted":
--+        _send_submission_notification(sales_order_name)
--+    elif event_type == "cancelled":
--+        _send_cancellation_notification(sales_order_name)
--+
--+
--+def _send_submission_notification(sales_order_name: str):
--+    """
--+    发送提交通知
--+    """
--+    try:
--+        doc = frappe.get_doc("Sales Order", sales_order_name)
--+        
--+        # 这里可以实现具体的通知逻辑
--+        # 比如发送邮件、创建待办事项等
--+        frappe.publish_realtime(
--+            "sales_order_submission_complete",
--+            {
--+                "name": doc.name,
--+                "customer": doc.customer,
--+                "grand_total": doc.grand_total
--+            },
--+            user=frappe.session.user
--+        )
--+
--+    except Exception as e:
--+        frappe.log_error(f"Failed to send submission notification: {str(e)}")
--+
--+
--+def _send_cancellation_notification(sales_order_name: str):
--+    """
--+    发送取消通知
--+    """
--+    try:
--+        doc = frappe.get_doc("Sales Order", sales_order_name)
--+        
--+        frappe.publish_realtime(
--+            "sales_order_cancelled",
--+            {
--+                "name": doc.name,
--+                "customer": doc.customer,
--+                "reason": "Cancelled by user"
--+            },
--+            user=frappe.session.user
--+        )
--+
--+    except Exception as e:
--+        frappe.log_error(f"Failed to send cancellation notification: {str(e)}")
+-deleted file mode 100644
+-index 047cbfeadd..0000000000
+---- a/erpnext/selling/events/sales_order_events.py
+-+++ /dev/null
+-@@ -1,120 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--import frappe
+--from frappe import _
+--from typing import Dict
+--
+--
+--def on_sales_order_submit(doc, method=None):
+--    """
+--    Sales Order 提交时的事件处理器
+--    通过 ERPNext 的 doc_events 钩子调用
+--    """
+--    try:
+--        from erpnext.selling.services import SalesOrderOrchestrator
+--
+--        # 使用编排器处理提交流程
+--        orchestrator = SalesOrderOrchestrator(doc)
+--        orchestrator.submit()
+--
+--        frappe.log_error(f"Sales Order {doc.name} submitted via orchestrator")
+--
+--    except Exception as e:
+--        frappe.log_error(f"Error in on_sales_order_submit: {str(e)}")
+--        raise
+--
+--
+--def on_sales_order_cancel(doc, method=None):
+--    """
+--    Sales Order 取消时的事件处理器
+--    """
+--    try:
+--        # 取消库存预留
+--        from erpnext.stock.services import StockReservationService
+--
+--        reservation_service = StockReservationService()
+--        reservation_service.cancel_reservation_for_sales_order(doc)
+--
+--        # 清理其他关联资源
+--        _cleanup_on_cancel(doc)
+--
+--        frappe.log_error(f"Sales Order {doc.name} cancelled successfully")
+--
+--    except Exception as e:
+--        frappe.log_error(f"Error in on_sales_order_cancel: {str(e)}")
+--
+--
+--def _cleanup_on_cancel(doc):
+--    """
+--    取消时的清理工作
+--    """
+--    # 恢复优惠券
+--    if doc.coupon_code:
+--        try:
+--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--            update_coupon_code_count(doc.coupon_code, "cancelled")
+--        except Exception as e:
+--            frappe.log_error(f"Failed to revert coupon code: {str(e)}")
+--
+--
+--@frappe.whitelist()
+--def handle_sales_order_notification(event_data: Dict):
+--    """
+--    处理 Sales Order 相关的通知（异步）
+--    """
+--    event_type = event_data.get("event_type")
+--    sales_order_name = event_data.get("sales_order_name")
+--
+--    if not sales_order_name:
+--        return
+--
+--    # 根据事件类型发送不同的通知
+--    if event_type == "submitted":
+--        _send_submission_notification(sales_order_name)
+--    elif event_type == "cancelled":
+--        _send_cancellation_notification(sales_order_name)
+--
+--
+--def _send_submission_notification(sales_order_name: str):
+--    """
+--    发送提交通知
+--    """
+--    try:
+--        doc = frappe.get_doc("Sales Order", sales_order_name)
+--        
+--        # 这里可以实现具体的通知逻辑
+--        # 比如发送邮件、创建待办事项等
+--        frappe.publish_realtime(
+--            "sales_order_submission_complete",
+--            {
+--                "name": doc.name,
+--                "customer": doc.customer,
+--                "grand_total": doc.grand_total
+--            },
+--            user=frappe.session.user
+--        )
+--
+--    except Exception as e:
+--        frappe.log_error(f"Failed to send submission notification: {str(e)}")
+--
+--
+--def _send_cancellation_notification(sales_order_name: str):
+--    """
+--    发送取消通知
+--    """
+--    try:
+--        doc = frappe.get_doc("Sales Order", sales_order_name)
+--        
+--        frappe.publish_realtime(
+--            "sales_order_cancelled",
+--            {
+--                "name": doc.name,
+--                "customer": doc.customer,
+--                "reason": "Cancelled by user"
+--            },
+--            user=frappe.session.user
+--        )
+--
+--    except Exception as e:
+--        frappe.log_error(f"Failed to send cancellation notification: {str(e)}")
 -diff --git a/erpnext/selling/services/__init__.py b/erpnext/selling/services/__init__.py
--new file mode 100644
--index 0000000000..192b711339
----- /dev/null
--+++ b/erpnext/selling/services/__init__.py
--@@ -0,0 +1,22 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+from erpnext.selling.services.sales_order_orchestrator import (
--+    SalesOrderOrchestrator,
--+    SalesOrderSubmitContext,
--+)
--+from erpnext.selling.services.transaction_manager import (
--+    TransactionManager,
--+    TransactionStep,
--+    TransactionContext,
--+    create_sales_order_transaction,
--+)
--+
--+__all__ = [
--+    "SalesOrderOrchestrator",
--+    "SalesOrderSubmitContext",
--+    "TransactionManager",
--+    "TransactionStep",
--+    "TransactionContext",
--+    "create_sales_order_transaction",
--+]
+-deleted file mode 100644
+-index 192b711339..0000000000
+---- a/erpnext/selling/services/__init__.py
+-+++ /dev/null
+-@@ -1,22 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--from erpnext.selling.services.sales_order_orchestrator import (
+--    SalesOrderOrchestrator,
+--    SalesOrderSubmitContext,
+--)
+--from erpnext.selling.services.transaction_manager import (
+--    TransactionManager,
+--    TransactionStep,
+--    TransactionContext,
+--    create_sales_order_transaction,
+--)
+--
+--__all__ = [
+--    "SalesOrderOrchestrator",
+--    "SalesOrderSubmitContext",
+--    "TransactionManager",
+--    "TransactionStep",
+--    "TransactionContext",
+--    "create_sales_order_transaction",
+--]
 -diff --git a/erpnext/selling/services/sales_order_orchestrator.py b/erpnext/selling/services/sales_order_orchestrator.py
--new file mode 100644
--index 0000000000..df5ee14e1b
----- /dev/null
--+++ b/erpnext/selling/services/sales_order_orchestrator.py
--@@ -0,0 +1,201 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+import frappe
--+from frappe import _
--+from typing import Dict, List, Optional
--+from dataclasses import dataclass
--+
--+
--+@dataclass
--+class SalesOrderSubmitContext:
--+    """上下文数据结构，在各个步骤间传递数据"""
--+    sales_order: object
--+    stock_reservation_result: Optional[Dict] = None
--+    accounting_result: Optional[Dict] = None
--+    notification_result: Optional[Dict] = None
--+    rollback_steps: List[callable] = None
--+    errors: List[str] = None
--+
--+    def __post_init__(self):
--+        self.rollback_steps = self.rollback_steps or []
--+        self.errors = self.errors or []
--+
--+
--+class SalesOrderOrchestrator:
--+    """
--+    Sales Order 提交流程编排器
--+    作为唯一的编排入口，协调各个领域服务
--+    """
--+
--+    def __init__(self, sales_order: object):
--+        self.sales_order = sales_order
--+        self.context = SalesOrderSubmitContext(sales_order=sales_order)
--+
--+    def submit(self):
--+        """
--+        主编排方法，按顺序执行提交流程
--+        """
--+        try:
--+            # 步骤 1: 验证前置条件
--+            self._validate_prerequisites()
--+
--+            # 步骤 2: 更新前置文档状态
--+            self._update_prevdoc_status()
--+
--+            # 步骤 3: 检查信用额度
--+            self._check_credit_limit()
--+
--+            # 步骤 4: 库存预留（添加回滚）
--+            self._reserve_stock()
--+
--+            # 步骤 5: 更新库存预留数量
--+            self._update_reserved_qty()
--+
--+            # 步骤 6: 审批控制
--+            self._validate_approving_authority()
--+
--+            # 步骤 7: 更新项目
--+            self._update_project()
--+
--+            # 步骤 8: 更新一揽子订单
--+            self._update_blanket_order()
--+
--+            # 步骤 9: 会计处理（添加回滚）
--+            self._process_accounting()
--+
--+            # 步骤 10: 更新关联文档
--+            self._update_linked_doc()
--+
--+            # 步骤 11: 更新优惠券
--+            self._update_coupon_code()
--+
--+            # 步骤 12: 发送通知
--+            self._send_notifications()
--+
--+            return True
--+
--+        except Exception as e:
--+            # 发生错误时执行回滚
--+            self._rollback()
--+            frappe.log_error(f"Sales Order submission failed: {str(e)}")
--+            raise
--+
--+    def _validate_prerequisites(self):
--+        """验证前置条件"""
--+        from erpnext.selling.doctype.sales_order.sales_order import check_modified_date
--+        check_modified_date(self.sales_order)
--+
--+    def _update_prevdoc_status(self):
--+        """更新前置文档状态"""
--+        self.sales_order.update_prevdoc_status()
--+
--+    def _check_credit_limit(self):
--+        """检查信用额度"""
--+        self.sales_order.check_credit_limit()
--+
--+    def _reserve_stock(self):
--+        """库存预留 - 使用领域服务"""
--+        from erpnext.stock.services.stock_reservation_service import StockReservationService
--+
--+        if self.sales_order.get("reserve_stock") and not self.sales_order.get("is_subcontracted"):
--+            try:
--+                reservation_service = StockReservationService()
--+                result = reservation_service.reserve_for_sales_order(self.sales_order)
--+                self.context.stock_reservation_result = result
--+
--+                # 注册回滚步骤
--+                self.context.rollback_steps.append(
--+                    lambda: reservation_service.cancel_reservation_for_sales_order(self.sales_order)
--+                )
--+
--+            except Exception as e:
--+                self.context.errors.append(f"Stock reservation failed: {str(e)}")
--+                raise
--+
--+    def _update_reserved_qty(self):
--+        """更新库存预留数量"""
--+        self.sales_order.update_reserved_qty()
--+
--+    def _validate_approving_authority(self):
--+        """验证审批权限"""
--+        if hasattr(frappe, "get_cached_doc"):
--+            authorization_control = frappe.get_cached_doc("Authorization Control")
--+            if hasattr(authorization_control, "validate_approving_authority"):
--+                authorization_control.validate_approving_authority(
--+                    self.sales_order.doctype, 
--+                    self.sales_order.company, 
--+                    self.sales_order.base_grand_total, 
--+                    self.sales_order
--+                )
--+
--+    def _update_project(self):
--+        """更新项目"""
--+        self.sales_order.update_project()
--+
--+    def _update_blanket_order(self):
--+        """更新一揽子订单"""
--+        self.sales_order.update_blanket_order()
--+
--+    def _process_accounting(self):
--+        """会计处理 - 这里可以扩展为完整的会计领域服务"""
--+        # 目前会计处理在 ERPNext 中更多是在 Sales Invoice 阶段
--+        # 这里可以预留位置，为未来的会计处理扩展
--+        pass
--+
--+    def _update_linked_doc(self):
--+        """更新关联文档"""
--+        if hasattr(self.sales_order, 'update_linked_doc'):
--+            self.sales_order.update_linked_doc(
--+                self.sales_order.doctype, 
--+                self.sales_order.name, 
--+                self.sales_order.inter_company_order_reference
--+            )
--+        else:
--+            from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
--+            update_linked_doc(
--+                self.sales_order.doctype, 
--+                self.sales_order.name, 
--+                self.sales_order.inter_company_order_reference
--+            )
--+
--+    def _update_coupon_code(self):
--+        """更新优惠券"""
--+        if self.sales_order.coupon_code:
--+            try:
--+                from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--+                update_coupon_code_count(self.sales_order.coupon_code, "used")
--+
--+                # 注册回滚步骤
--+                self.context.rollback_steps.append(
--+                    lambda: update_coupon_code_count(self.sales_order.coupon_code, "cancelled")
--+                )
--+            except Exception as e:
--+                self.context.errors.append(f"Coupon code update failed: {str(e)}")
--+
--+    def _send_notifications(self):
--+        """发送通知 - 可以通过事件驱动实现"""
--+        # 这里可以触发事件，让通知系统异步处理
--+        frappe.publish_realtime(
--+            "sales_order_submitted",
--+            {
--+                "name": self.sales_order.name,
--+                "customer": self.sales_order.customer,
--+                "company": self.sales_order.company
--+            }
--+        )
--+
--+    def _rollback(self):
--+        """执行回滚操作"""
--+        frappe.log_error(f"Rolling back Sales Order {self.sales_order.name} submission")
--+
--+        # 按相反顺序执行回滚步骤
--+        for rollback_step in reversed(self.context.rollback_steps):
--+            try:
--+                rollback_step()
--+            except Exception as e:
--+                frappe.log_error(f"Rollback step failed: {str(e)}")
--+
--+        # 记录所有错误
--+        if self.context.errors:
--+            frappe.log_error(f"Sales Order submission errors: {', '.join(self.context.errors)}")
+-deleted file mode 100644
+-index df5ee14e1b..0000000000
+---- a/erpnext/selling/services/sales_order_orchestrator.py
+-+++ /dev/null
+-@@ -1,201 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--import frappe
+--from frappe import _
+--from typing import Dict, List, Optional
+--from dataclasses import dataclass
+--
+--
+--@dataclass
+--class SalesOrderSubmitContext:
+--    """上下文数据结构，在各个步骤间传递数据"""
+--    sales_order: object
+--    stock_reservation_result: Optional[Dict] = None
+--    accounting_result: Optional[Dict] = None
+--    notification_result: Optional[Dict] = None
+--    rollback_steps: List[callable] = None
+--    errors: List[str] = None
+--
+--    def __post_init__(self):
+--        self.rollback_steps = self.rollback_steps or []
+--        self.errors = self.errors or []
+--
+--
+--class SalesOrderOrchestrator:
+--    """
+--    Sales Order 提交流程编排器
+--    作为唯一的编排入口，协调各个领域服务
+--    """
+--
+--    def __init__(self, sales_order: object):
+--        self.sales_order = sales_order
+--        self.context = SalesOrderSubmitContext(sales_order=sales_order)
+--
+--    def submit(self):
+--        """
+--        主编排方法，按顺序执行提交流程
+--        """
+--        try:
+--            # 步骤 1: 验证前置条件
+--            self._validate_prerequisites()
+--
+--            # 步骤 2: 更新前置文档状态
+--            self._update_prevdoc_status()
+--
+--            # 步骤 3: 检查信用额度
+--            self._check_credit_limit()
+--
+--            # 步骤 4: 库存预留（添加回滚）
+--            self._reserve_stock()
+--
+--            # 步骤 5: 更新库存预留数量
+--            self._update_reserved_qty()
+--
+--            # 步骤 6: 审批控制
+--            self._validate_approving_authority()
+--
+--            # 步骤 7: 更新项目
+--            self._update_project()
+--
+--            # 步骤 8: 更新一揽子订单
+--            self._update_blanket_order()
+--
+--            # 步骤 9: 会计处理（添加回滚）
+--            self._process_accounting()
+--
+--            # 步骤 10: 更新关联文档
+--            self._update_linked_doc()
+--
+--            # 步骤 11: 更新优惠券
+--            self._update_coupon_code()
+--
+--            # 步骤 12: 发送通知
+--            self._send_notifications()
+--
+--            return True
+--
+--        except Exception as e:
+--            # 发生错误时执行回滚
+--            self._rollback()
+--            frappe.log_error(f"Sales Order submission failed: {str(e)}")
+--            raise
+--
+--    def _validate_prerequisites(self):
+--        """验证前置条件"""
+--        from erpnext.selling.doctype.sales_order.sales_order import check_modified_date
+--        check_modified_date(self.sales_order)
+--
+--    def _update_prevdoc_status(self):
+--        """更新前置文档状态"""
+--        self.sales_order.update_prevdoc_status()
+--
+--    def _check_credit_limit(self):
+--        """检查信用额度"""
+--        self.sales_order.check_credit_limit()
+--
+--    def _reserve_stock(self):
+--        """库存预留 - 使用领域服务"""
+--        from erpnext.stock.services.stock_reservation_service import StockReservationService
+--
+--        if self.sales_order.get("reserve_stock") and not self.sales_order.get("is_subcontracted"):
+--            try:
+--                reservation_service = StockReservationService()
+--                result = reservation_service.reserve_for_sales_order(self.sales_order)
+--                self.context.stock_reservation_result = result
+--
+--                # 注册回滚步骤
+--                self.context.rollback_steps.append(
+--                    lambda: reservation_service.cancel_reservation_for_sales_order(self.sales_order)
+--                )
+--
+--            except Exception as e:
+--                self.context.errors.append(f"Stock reservation failed: {str(e)}")
+--                raise
+--
+--    def _update_reserved_qty(self):
+--        """更新库存预留数量"""
+--        self.sales_order.update_reserved_qty()
+--
+--    def _validate_approving_authority(self):
+--        """验证审批权限"""
+--        if hasattr(frappe, "get_cached_doc"):
+--            authorization_control = frappe.get_cached_doc("Authorization Control")
+--            if hasattr(authorization_control, "validate_approving_authority"):
+--                authorization_control.validate_approving_authority(
+--                    self.sales_order.doctype, 
+--                    self.sales_order.company, 
+--                    self.sales_order.base_grand_total, 
+--                    self.sales_order
+--                )
+--
+--    def _update_project(self):
+--        """更新项目"""
+--        self.sales_order.update_project()
+--
+--    def _update_blanket_order(self):
+--        """更新一揽子订单"""
+--        self.sales_order.update_blanket_order()
+--
+--    def _process_accounting(self):
+--        """会计处理 - 这里可以扩展为完整的会计领域服务"""
+--        # 目前会计处理在 ERPNext 中更多是在 Sales Invoice 阶段
+--        # 这里可以预留位置，为未来的会计处理扩展
+--        pass
+--
+--    def _update_linked_doc(self):
+--        """更新关联文档"""
+--        if hasattr(self.sales_order, 'update_linked_doc'):
+--            self.sales_order.update_linked_doc(
+--                self.sales_order.doctype, 
+--                self.sales_order.name, 
+--                self.sales_order.inter_company_order_reference
+--            )
+--        else:
+--            from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
+--            update_linked_doc(
+--                self.sales_order.doctype, 
+--                self.sales_order.name, 
+--                self.sales_order.inter_company_order_reference
+--            )
+--
+--    def _update_coupon_code(self):
+--        """更新优惠券"""
+--        if self.sales_order.coupon_code:
+--            try:
+--                from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--                update_coupon_code_count(self.sales_order.coupon_code, "used")
+--
+--                # 注册回滚步骤
+--                self.context.rollback_steps.append(
+--                    lambda: update_coupon_code_count(self.sales_order.coupon_code, "cancelled")
+--                )
+--            except Exception as e:
+--                self.context.errors.append(f"Coupon code update failed: {str(e)}")
+--
+--    def _send_notifications(self):
+--        """发送通知 - 可以通过事件驱动实现"""
+--        # 这里可以触发事件，让通知系统异步处理
+--        frappe.publish_realtime(
+--            "sales_order_submitted",
+--            {
+--                "name": self.sales_order.name,
+--                "customer": self.sales_order.customer,
+--                "company": self.sales_order.company
+--            }
+--        )
+--
+--    def _rollback(self):
+--        """执行回滚操作"""
+--        frappe.log_error(f"Rolling back Sales Order {self.sales_order.name} submission")
+--
+--        # 按相反顺序执行回滚步骤
+--        for rollback_step in reversed(self.context.rollback_steps):
+--            try:
+--                rollback_step()
+--            except Exception as e:
+--                frappe.log_error(f"Rollback step failed: {str(e)}")
+--
+--        # 记录所有错误
+--        if self.context.errors:
+--            frappe.log_error(f"Sales Order submission errors: {', '.join(self.context.errors)}")
 -diff --git a/erpnext/selling/services/transaction_manager.py b/erpnext/selling/services/transaction_manager.py
--new file mode 100644
--index 0000000000..269afabe92
----- /dev/null
--+++ b/erpnext/selling/services/transaction_manager.py
--@@ -0,0 +1,159 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+import frappe
--+from frappe import _
--+from typing import List, Callable, Optional
--+from dataclasses import dataclass, field
--+
--+
--+@dataclass
--+class TransactionStep:
--+    """事务步骤"""
--+    name: str
--+    execute: Callable
--+    rollback: Optional[Callable] = None
--+    executed: bool = False
--+    success: bool = False
--+
--+
--+@dataclass
--+class TransactionContext:
--+    """事务上下文"""
--+    steps: List[TransactionStep] = field(default_factory=list)
--+    current_step: int = 0
--+    error: Optional[Exception] = None
--+
--+
--+class TransactionManager:
--+    """
--+    事务管理器 - 提供 Sagas 模式的实现
--+    用于处理分布式事务的补偿/回滚
--+    """
--+
--+    def __init__(self, name: str = "SalesOrderTransaction"):
--+        self.name = name
--+        self.context = TransactionContext()
--+
--+    def add_step(
--+        self,
--+        name: str,
--+        execute_func: Callable,
--+        rollback_func: Optional[Callable] = None
--+    ) -> 'TransactionManager':
--+        """
--+        添加事务步骤
--+        
--+        Args:
--+            name: 步骤名称
--+            execute_func: 执行函数
--+            rollback_func: 回滚函数（可选）
--+        """
--+        step = TransactionStep(
--+            name=name,
--+            execute=execute_func,
--+            rollback=rollback_func
--+        )
--+        self.context.steps.append(step)
--+        return self
--+
--+    def execute(self) -> bool:
--+        """
--+        执行所有事务步骤
--+        失败时自动执行已完成步骤的回滚
--+        """
--+        frappe.log_error(f"Starting transaction: {self.name}")
--+
--+        for i, step in enumerate(self.context.steps):
--+            self.context.current_step = i
--+
--+            try:
--+                frappe.log_error(f"Executing step: {step.name}")
--+                step.execute()
--+                step.executed = True
--+                step.success = True
--+                frappe.log_error(f"Step completed: {step.name}")
--+
--+            except Exception as e:
--+                step.success = False
--+                self.context.error = e
--+                frappe.log_error(f"Step failed: {step.name}, Error: {str(e)}")
--+
--+                # 执行回滚
--+                self._rollback()
--+                raise
--+
--+        frappe.log_error(f"Transaction completed successfully: {self.name}")
--+        return True
--+
--+    def _rollback(self):
--+        """
--+        执行回滚操作 - 按相反顺序回滚已成功执行的步骤
--+        """
--+        frappe.log_error(f"Starting rollback for transaction: {self.name}")
--+
--+        # 按相反顺序回滚已成功执行的步骤
--+        for step in reversed(self.context.steps[:self.context.current_step + 1]):
--+            if step.executed and step.success and step.rollback:
--+                try:
--+                    frappe.log_error(f"Rolling back step: {step.name}")
--+                    step.rollback()
--+                    frappe.log_error(f"Step rolled back: {step.name}")
--+                except Exception as e:
--+                    # 回滚失败时记录日志但继续尝试其他回滚
--+                    frappe.log_error(
--+                        f"Failed to rollback step: {step.name}, Error: {str(e)}"
--+                    )
--+
--+        frappe.log_error(f"Rollback completed for transaction: {self.name}")
--+
--+    def get_status(self) -> dict:
--+        """获取事务状态"""
--+        return {
--+            "transaction_name": self.name,
--+            "total_steps": len(self.context.steps),
--+            "current_step": self.context.current_step,
--+            "steps": [
--+                {
--+                    "name": step.name,
--+                    "executed": step.executed,
--+                    "success": step.success
--+                }
--+                for step in self.context.steps
--+            ],
--+            "error": str(self.context.error) if self.context.error else None
--+        }
--+
--+
--+def create_sales_order_transaction(sales_order) -> TransactionManager:
--+    """
--+    为 Sales Order 创建事务管理器
--+    """
--+    from erpnext.stock.services import StockReservationService
--+
--+    transaction = TransactionManager("SalesOrderSubmit")
--+
--+    reservation_service = StockReservationService()
--+
--+    # 步骤 1: 库存预留
--+    transaction.add_step(
--+        name="StockReservation",
--+        execute_func=lambda: reservation_service.reserve_for_sales_order(sales_order) 
--+            if sales_order.get("reserve_stock") and not sales_order.get("is_subcontracted") 
--+            else None,
--+        rollback_func=lambda: reservation_service.cancel_reservation_for_sales_order(sales_order)
--+    )
--+
--+    # 步骤 2: 优惠券更新
--+    if sales_order.coupon_code:
--+        from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--+        
--+        transaction.add_step(
--+            name="CouponUpdate",
--+            execute_func=lambda: update_coupon_code_count(sales_order.coupon_code, "used"),
--+            rollback_func=lambda: update_coupon_code_count(sales_order.coupon_code, "cancelled")
--+        )
--+
--+    # 可以继续添加更多步骤...
--+
--+    return transaction
+-deleted file mode 100644
+-index 269afabe92..0000000000
+---- a/erpnext/selling/services/transaction_manager.py
+-+++ /dev/null
+-@@ -1,159 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--import frappe
+--from frappe import _
+--from typing import List, Callable, Optional
+--from dataclasses import dataclass, field
+--
+--
+--@dataclass
+--class TransactionStep:
+--    """事务步骤"""
+--    name: str
+--    execute: Callable
+--    rollback: Optional[Callable] = None
+--    executed: bool = False
+--    success: bool = False
+--
+--
+--@dataclass
+--class TransactionContext:
+--    """事务上下文"""
+--    steps: List[TransactionStep] = field(default_factory=list)
+--    current_step: int = 0
+--    error: Optional[Exception] = None
+--
+--
+--class TransactionManager:
+--    """
+--    事务管理器 - 提供 Sagas 模式的实现
+--    用于处理分布式事务的补偿/回滚
+--    """
+--
+--    def __init__(self, name: str = "SalesOrderTransaction"):
+--        self.name = name
+--        self.context = TransactionContext()
+--
+--    def add_step(
+--        self,
+--        name: str,
+--        execute_func: Callable,
+--        rollback_func: Optional[Callable] = None
+--    ) -> 'TransactionManager':
+--        """
+--        添加事务步骤
+--        
+--        Args:
+--            name: 步骤名称
+--            execute_func: 执行函数
+--            rollback_func: 回滚函数（可选）
+--        """
+--        step = TransactionStep(
+--            name=name,
+--            execute=execute_func,
+--            rollback=rollback_func
+--        )
+--        self.context.steps.append(step)
+--        return self
+--
+--    def execute(self) -> bool:
+--        """
+--        执行所有事务步骤
+--        失败时自动执行已完成步骤的回滚
+--        """
+--        frappe.log_error(f"Starting transaction: {self.name}")
+--
+--        for i, step in enumerate(self.context.steps):
+--            self.context.current_step = i
+--
+--            try:
+--                frappe.log_error(f"Executing step: {step.name}")
+--                step.execute()
+--                step.executed = True
+--                step.success = True
+--                frappe.log_error(f"Step completed: {step.name}")
+--
+--            except Exception as e:
+--                step.success = False
+--                self.context.error = e
+--                frappe.log_error(f"Step failed: {step.name}, Error: {str(e)}")
+--
+--                # 执行回滚
+--                self._rollback()
+--                raise
+--
+--        frappe.log_error(f"Transaction completed successfully: {self.name}")
+--        return True
+--
+--    def _rollback(self):
+--        """
+--        执行回滚操作 - 按相反顺序回滚已成功执行的步骤
+--        """
+--        frappe.log_error(f"Starting rollback for transaction: {self.name}")
+--
+--        # 按相反顺序回滚已成功执行的步骤
+--        for step in reversed(self.context.steps[:self.context.current_step + 1]):
+--            if step.executed and step.success and step.rollback:
+--                try:
+--                    frappe.log_error(f"Rolling back step: {step.name}")
+--                    step.rollback()
+--                    frappe.log_error(f"Step rolled back: {step.name}")
+--                except Exception as e:
+--                    # 回滚失败时记录日志但继续尝试其他回滚
+--                    frappe.log_error(
+--                        f"Failed to rollback step: {step.name}, Error: {str(e)}"
+--                    )
+--
+--        frappe.log_error(f"Rollback completed for transaction: {self.name}")
+--
+--    def get_status(self) -> dict:
+--        """获取事务状态"""
+--        return {
+--            "transaction_name": self.name,
+--            "total_steps": len(self.context.steps),
+--            "current_step": self.context.current_step,
+--            "steps": [
+--                {
+--                    "name": step.name,
+--                    "executed": step.executed,
+--                    "success": step.success
+--                }
+--                for step in self.context.steps
+--            ],
+--            "error": str(self.context.error) if self.context.error else None
+--        }
+--
+--
+--def create_sales_order_transaction(sales_order) -> TransactionManager:
+--    """
+--    为 Sales Order 创建事务管理器
+--    """
+--    from erpnext.stock.services import StockReservationService
+--
+--    transaction = TransactionManager("SalesOrderSubmit")
+--
+--    reservation_service = StockReservationService()
+--
+--    # 步骤 1: 库存预留
+--    transaction.add_step(
+--        name="StockReservation",
+--        execute_func=lambda: reservation_service.reserve_for_sales_order(sales_order) 
+--            if sales_order.get("reserve_stock") and not sales_order.get("is_subcontracted") 
+--            else None,
+--        rollback_func=lambda: reservation_service.cancel_reservation_for_sales_order(sales_order)
+--    )
+--
+--    # 步骤 2: 优惠券更新
+--    if sales_order.coupon_code:
+--        from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+--        
+--        transaction.add_step(
+--            name="CouponUpdate",
+--            execute_func=lambda: update_coupon_code_count(sales_order.coupon_code, "used"),
+--            rollback_func=lambda: update_coupon_code_count(sales_order.coupon_code, "cancelled")
+--        )
+--
+--    # 可以继续添加更多步骤...
+--
+--    return transaction
 -diff --git a/erpnext/stock/services/__init__.py b/erpnext/stock/services/__init__.py
--new file mode 100644
--index 0000000000..c4d29cc83d
----- /dev/null
--+++ b/erpnext/stock/services/__init__.py
--@@ -0,0 +1,12 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+from erpnext.stock.services.stock_reservation_service import (
--+    StockReservationService,
--+    ReservationResult,
--+)
--+
--+__all__ = [
--+    "StockReservationService",
--+    "ReservationResult",
--+]
+-deleted file mode 100644
+-index c4d29cc83d..0000000000
+---- a/erpnext/stock/services/__init__.py
+-+++ /dev/null
+-@@ -1,12 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--from erpnext.stock.services.stock_reservation_service import (
+--    StockReservationService,
+--    ReservationResult,
+--)
+--
+--__all__ = [
+--    "StockReservationService",
+--    "ReservationResult",
+--]
 -diff --git a/erpnext/stock/services/stock_reservation_service.py b/erpnext/stock/services/stock_reservation_service.py
--new file mode 100644
--index 0000000000..35a7647092
----- /dev/null
--+++ b/erpnext/stock/services/stock_reservation_service.py
--@@ -0,0 +1,137 @@
--+# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--+# License: GNU General Public License v3. See license.txt
--+
--+import frappe
--+from frappe import _
--+from typing import Dict, List, Optional
--+from dataclasses import dataclass
--+
--+
--+@dataclass
--+class ReservationResult:
--+    success: bool
--+    reservation_entries: List[str] = None
--+    error_message: Optional[str] = None
--+
--+    def __post_init__(self):
--+        self.reservation_entries = self.reservation_entries or []
--+
--+
--+class StockReservationService:
--+    """
--+    库存预留领域服务
--+    封装所有与库存预留相关的业务逻辑
--+    """
--+
--+    def reserve_for_sales_order(self, sales_order: object) -> ReservationResult:
--+        """
--+        为 Sales Order 预留库存
--+        """
--+        result = ReservationResult(success=False)
--+
--+        try:
--+            # 调用原有的创建库存预留条目的方法
--+            reservation_entries = self._create_reservation_entries(sales_order)
--+            
--+            result.reservation_entries = reservation_entries
--+            result.success = True
--+
--+            frappe.msgprint(_("Stock Reservation Entries Created"), alert=True, indicator="green")
--+
--+        except Exception as e:
--+            result.error_message = str(e)
--+            frappe.log_error(f"Stock reservation failed for Sales Order {sales_order.name}: {str(e)}")
--+            raise
--+
--+        return result
--+
--+    def cancel_reservation_for_sales_order(self, sales_order: object) -> None:
--+        """
--+        取消 Sales Order 的库存预留
--+        """
--+        try:
--+            # 调用原有的取消库存预留条目的方法
--+            if hasattr(sales_order, 'cancel_stock_reservation_entries'):
--+                sales_order.cancel_stock_reservation_entries(notify=False)
--+            else:
--+                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--+                    cancel_stock_reservation_entries,
--+                )
--+                cancel_stock_reservation_entries(
--+                    voucher_type=sales_order.doctype, 
--+                    voucher_no=sales_order.name,
--+                    notify=False
--+                )
--+
--+            frappe.msgprint(_("Stock Reservation Entries Cancelled"), alert=True, indicator="orange")
--+
--+        except Exception as e:
--+            frappe.log_error(f"Failed to cancel stock reservation for Sales Order {sales_order.name}: {str(e)}")
--+            # 取消操作失败不应该阻止回滚，只是记录日志
--+
--+    def _create_reservation_entries(self, sales_order: object) -> List[str]:
--+        """
--+        创建库存预留条目
--+        """
--+        reservation_entries = []
--+
--+        # 首先尝试直接调用 Sales Order 的方法
--+        if hasattr(sales_order, 'create_stock_reservation_entries'):
--+            sales_order.create_stock_reservation_entries(notify=False)
--+            
--+            # 获取创建的预留条目
--+            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--+                StockReservationEntry,
--+            )
--+            entries = frappe.get_all(
--+                "Stock Reservation Entry",
--+                filters={
--+                    "voucher_type": sales_order.doctype,
--+                    "voucher_no": sales_order.name,
--+                    "docstatus": 1
--+                },
--+                pluck="name"
--+            )
--+            reservation_entries = entries
--+
--+        else:
--+            # 备用方案：直接从 stock_reservation_entry 模块调用
--+            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--+                create_stock_reservation_entries_for_sales_order,
--+            )
--+            if 'create_stock_reservation_entries_for_sales_order' in globals():
--+                create_stock_reservation_entries_for_sales_order(sales_order)
--+
--+        return reservation_entries
--+
--+    def check_available_stock(self, item_code: str, warehouse: str, qty: float, company: str) -> bool:
--+        """
--+        检查可用库存
--+        """
--+        from erpnext.stock.stock_balance import get_reserved_qty
--+        
--+        available_qty = frappe.get_cached_value(
--+            "Bin", 
--+            {"item_code": item_code, "warehouse": warehouse}, 
--+            "actual_qty"
--+        ) or 0.0
--+        
--+        reserved_qty = get_reserved_qty(item_code, warehouse)
--+        
--+        return (available_qty - reserved_qty) >= qty
--+
--+    def get_reservation_status(self, voucher_type: str, voucher_no: str) -> List[Dict]:
--+        """
--+        获取预留状态
--+        """
--+        entries = frappe.get_all(
--+            "Stock Reservation Entry",
--+            filters={
--+                "voucher_type": voucher_type,
--+                "voucher_no": voucher_no,
--+                "docstatus": ["!=", 2]
--+            },
--+            fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty", "status"]
--+        )
--+        
--+        return entries
-diff --git a/REFACTORING_GUIDE.md b/REFACTORING_GUIDE.md
-deleted file mode 100644
-index 7311acd2a3..0000000000
---- a/REFACTORING_GUIDE.md
-+++ /dev/null
-@@ -1,270 +0,0 @@
--# Sales Order 提交流程重构指南
--
--## 📋 概述
--
--本次重构旨在解决 ERPNext 中 Sales Order 提交时的高耦合问题，通过引入**编排层+领域服务+事件驱动**的三层架构来提高代码的可维护性和可扩展性。
--
-----
--
--## 🏗️ 重构架构
--
--### 三层架构设计
--
--```
--┌─────────────────────────────────────────────────────────┐
--│                   编排层 (Orchestrator)                  │
--│              SalesOrderOrchestrator                      │
--│         唯一的提交流程入口，协调各领域服务                │
--└─────────────────────────────────────────────────────────┘
--                          │
--        ┌─────────────────┼─────────────────┐
--        │                 │                 │
--        ▼                 ▼                 ▼
--┌──────────────┐  ┌──────────────┐  ┌──────────────┐
--│  库存领域    │  │  会计领域    │  │  通知服务    │
--│  服务        │  │  服务        │  │  (事件驱动)  │
--└──────────────┘  └──────────────┘  └──────────────┘
--```
--
--### 关键组件
--
--1. **编排层 (`erpnext/selling/services/`)**
--   - `SalesOrderOrchestrator`: 主编排器
--   - `TransactionManager`: 事务管理器（Sagas 模式）
--
--2. **领域服务 (`erpnext/stock/services/`, `erpnext/accounts/services/`)**
--   - `StockReservationService`: 库存预留服务
--   - （待扩展）会计服务等
--
--3. **事件处理器 (`erpnext/selling/events/`)**
--   - 解耦通知等异步操作
--
-----
--
--## 🚀 迁移步骤
--
--### 阶段 1: 基础设施准备（当前已完成）
--
--✅ 创建服务目录结构
--✅ 实现编排器和领域服务
--✅ 实现事务管理器和回滚机制
--✅ 创建事件处理器
--
--### 阶段 2: 逐步集成（下一步）
--
--#### 步骤 1: 备份当前代码
--```bash
--# 备份原始的 sales_order.py
--cp erpnext/selling/doctype/sales_order/sales_order.py \
--   erpnext/selling/doctype/sales_order/sales_order.py.backup
--```
--
--#### 步骤 2: 修改 SalesOrder.on_submit 方法
--
--编辑 `erpnext/selling/doctype/sales_order/sales_order.py`:
--
--```python
--def on_submit(self):
--    # 新的方式：使用编排器
--    from erpnext.selling.services import SalesOrderOrchestrator
--    
--    orchestrator = SalesOrderOrchestrator(self)
--    orchestrator.submit()
--
--    # 【可选】保留原有逻辑作为降级方案（初期建议保留）
--    # self._on_submit_legacy()
--
--def _on_submit_legacy(self):
--    # 将原有的 on_submit 代码移到这里
--    super().update_prevdoc_status()
--    self.check_credit_limit()
--    # ... 其他原有代码
--```
--
--#### 步骤 3: 添加特性开关（推荐）
--
--在 `Selling Settings` 中添加开关：
--
--```python
--# 在 SalesOrder.on_submit 中
--use_new_orchestrator = frappe.get_cached_value(
--    "Selling Settings", 
--    None, 
--    "use_new_sales_order_orchestrator"
--)
--
--if use_new_orchestrator:
--    from erpnext.selling.services import SalesOrderOrchestrator
--    SalesOrderOrchestrator(self).submit()
--else:
--    self._on_submit_legacy()
--```
--
--#### 步骤 4: 逐步迁移 on_cancel
--
--类似地，修改 `on_cancel` 方法：
--
--```python
--def on_cancel(self):
--    from erpnext.selling.events import on_sales_order_cancel
--    on_sales_order_cancel(self)
--```
--
--### 阶段 3: 优化和完善
--
--1. **添加单元测试**
--2. **性能监控**
--3. **日志增强**
--4. **完善错误处理**
--
-----
--
--## 🔧 关键设计决策
--
--### 1. 为什么选择编排器作为唯一入口？
--
--**问题**：原代码中 `SalesOrder` 类直接调用多个模块：
--- `stock` 模块的库存预留
--- `accounts` 模块的会计处理
--- `notifications` 模块的通知
--
--**解决方案**：
--- ✅ 单一职责原则：`SalesOrder` 只负责文档本身的业务逻辑
--- ✅ 降低耦合：各模块通过编排器协调，不直接相互依赖
--- ✅ 便于测试：可以独立测试编排逻辑
--
--### 2. 领域服务 vs 应用服务 vs 事件处理器
--
--| 组件类型 | 位置 | 职责 | 示例 |
--|---------|------|------|------|
--| **领域服务** | `erpnext/{module}/services/` | 封装纯领域逻辑 | `StockReservationService` |
--| **应用服务** | `erpnext/selling/services/` | 协调用例流程 | `SalesOrderOrchestrator` |
--| **事件处理器** | `erpnext/selling/events/` | 解耦异步操作 | 通知发送、审计日志 |
--
--### 3. 补偿/回滚机制设计
--
--采用 **Sagas 模式**：
--- 每个事务步骤都有对应的回滚操作
--- 失败时按相反顺序回滚已成功的步骤
--- 回滚失败时记录日志但不中断其他回滚
--
--```python
--# 伪代码示例
--transaction = TransactionManager()
--transaction.add_step(
--    name="StockReservation",
--    execute=reserve_stock,
--    rollback=cancel_reservation
--)
--transaction.add_step(
--    name="Accounting",
--    execute=post_to_gl,
--    rollback=reverse_gl_entry
--)
--transaction.execute()
--```
--
-----
--
--## 📁 新增文件清单
--
--```
--erpnext/
--├── selling/
--│   ├── services/
--│   │   ├── __init__.py
--│   │   ├── sales_order_orchestrator.py  # 编排器
--│   │   └── transaction_manager.py        # 事务管理器
--│   └── events/
--│       ├── __init__.py
--│       └── sales_order_events.py         # 事件处理器
--└── stock/
--    └── services/
--        ├── __init__.py
--        └── stock_reservation_service.py  # 库存预留服务
--```
--
-----
--
--## 🎯 重构收益
--
--1. **可维护性提升**
--   - 职责清晰，易于理解
--   - 修改某一模块不影响其他模块
--
--2. **可测试性提升**
--   - 可以独立测试各领域服务
--   - 编排逻辑可以 mock 依赖
--
--3. **可扩展性提升**
--   - 新增业务步骤只需添加新的领域服务
--   - 事件驱动便于添加新的通知类型
--
--4. **数据一致性**
--   - Sagas 模式保证失败时的正确回滚
--   - 显式的事务边界
--
-----
--
--## ⚠️ 注意事项
--
--### 迁移风险缓解
--
--1. **灰度发布**
--   - 先在测试环境验证
--   - 再在生产环境小范围试用
--   - 最后全量切换
--
--2. **降级方案**
--   - 保留原有代码作为降级方案
--   - 通过特性开关快速切换
--
--3. **监控和日志**
--   - 增强日志记录
--   - 监控关键指标（成功率、耗时等）
--
--### 向后兼容
--
--- ✅ 保持公共 API 不变
--- ✅ 提供迁移工具
--- ✅ 支持逐步迁移
--
-----
--
--## 📊 后续扩展建议
--
--1. **会计领域服务**
--   - 将会计相关逻辑从 `SalesOrder` 中剥离
--   - 创建 `AccountingService`
--
--2. **异步处理**
--   - 使用 `frappe.enqueue` 处理耗时操作
--   - 提高响应速度
--
--3. **更多文档类型**
--   - 将相同模式应用到 `Sales Invoice`、`Purchase Order` 等
--   - 统一架构风格
--
--4. **测试覆盖**
--   - 单元测试：测试各领域服务
--   - 集成测试：测试编排逻辑
--   - E2E 测试：完整流程验证
--
-----
--
--## 🆘 常见问题
--
--### Q: 如何回滚到原版本？
--A: 使用特性开关关闭新编排器，或通过 git 恢复原代码。
--
--### Q: 对性能有影响吗？
--A: 理论上影响很小（增加了一层间接调用），实际性能需要测试验证。如发现问题可以优化。
--
--### Q: 其他文档类型是否也需要重构？
--A: 建议采用相同模式，但可以分阶段进行，优先处理高频使用的文档类型。
--
-----
--
--## 📞 联系方式
--
--如有问题或建议，请联系开发团队。
-diff --git a/erpnext/accounts/doctype/pricing_rule/utils.py b/erpnext/accounts/doctype/pricing_rule/utils.py
-index 82f269d6da..e607baab05 100644
---- a/erpnext/accounts/doctype/pricing_rule/utils.py
-+++ b/erpnext/accounts/doctype/pricing_rule/utils.py
-@@ -756,14 +756,6 @@ def validate_coupon_code(coupon_name):
- 		frappe.throw(_("Sorry, this coupon code is no longer valid"))
- 
- 
--def update_coupon_code_count(coupon_name, transaction_type):
--	coupon = frappe.get_doc("Coupon Code", coupon_name)
--	if coupon:
--		if transaction_type == "used":
--			if not coupon.maximum_use:
--				coupon.used = coupon.used + 1
--				coupon.save(ignore_permissions=True)
--			elif coupon.used < coupon.maximum_use:
- 				coupon.used = coupon.used + 1
- 				coupon.save(ignore_permissions=True)
- 			else:
-diff --git a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
-index db1e56a2b7..99f75fbe73 100644
---- a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
-+++ b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
-@@ -2485,14 +2485,6 @@ def update_linked_doc(doctype, name, inter_company_reference):
- 		frappe.db.set_value(doctype, inter_company_reference, ref_field, name)
- 
- 
--def unlink_inter_company_doc(doctype, name, inter_company_reference):
--	if doctype in ["Sales Invoice", "Purchase Invoice"]:
--		ref_doc = "Purchase Invoice" if doctype == "Sales Invoice" else "Sales Invoice"
--		ref_field = "inter_company_invoice_reference"
--	else:
--		ref_doc = "Purchase Order" if doctype == "Sales Order" else "Sales Order"
--		ref_field = "inter_company_order_reference"
--
- 	if inter_company_reference:
- 		frappe.db.set_value(doctype, name, ref_field, "")
- 		frappe.db.set_value(ref_doc, inter_company_reference, ref_field, "")
+-deleted file mode 100644
+-index 35a7647092..0000000000
+---- a/erpnext/stock/services/stock_reservation_service.py
+-+++ /dev/null
+-@@ -1,137 +0,0 @@
+--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
+--# License: GNU General Public License v3. See license.txt
+--
+--import frappe
+--from frappe import _
+--from typing import Dict, List, Optional
+--from dataclasses import dataclass
+--
+--
+--@dataclass
+--class ReservationResult:
+--    success: bool
+--    reservation_entries: List[str] = None
+--    error_message: Optional[str] = None
+--
+--    def __post_init__(self):
+--        self.reservation_entries = self.reservation_entries or []
+--
+--
+--class StockReservationService:
+--    """
+--    库存预留领域服务
+--    封装所有与库存预留相关的业务逻辑
+--    """
+--
+--    def reserve_for_sales_order(self, sales_order: object) -> ReservationResult:
+--        """
+--        为 Sales Order 预留库存
+--        """
+--        result = ReservationResult(success=False)
+--
+--        try:
+--            # 调用原有的创建库存预留条目的方法
+--            reservation_entries = self._create_reservation_entries(sales_order)
+--            
+--            result.reservation_entries = reservation_entries
+--            result.success = True
+--
+--            frappe.msgprint(_("Stock Reservation Entries Created"), alert=True, indicator="green")
+--
+--        except Exception as e:
+--            result.error_message = str(e)
+--            frappe.log_error(f"Stock reservation failed for Sales Order {sales_order.name}: {str(e)}")
+--            raise
+--
+--        return result
+--
+--    def cancel_reservation_for_sales_order(self, sales_order: object) -> None:
+--        """
+--        取消 Sales Order 的库存预留
+--        """
+--        try:
+--            # 调用原有的取消库存预留条目的方法
+--            if hasattr(sales_order, 'cancel_stock_reservation_entries'):
+--                sales_order.cancel_stock_reservation_entries(notify=False)
+--            else:
+--                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--                    cancel_stock_reservation_entries,
+--                )
+--                cancel_stock_reservation_entries(
+--                    voucher_type=sales_order.doctype, 
+--                    voucher_no=sales_order.name,
+--                    notify=False
+--                )
+--
+--            frappe.msgprint(_("Stock Reservation Entries Cancelled"), alert=True, indicator="orange")
+--
+--        except Exception as e:
+--            frappe.log_error(f"Failed to cancel stock reservation for Sales Order {sales_order.name}: {str(e)}")
+--            # 取消操作失败不应该阻止回滚，只是记录日志
+--
+--    def _create_reservation_entries(self, sales_order: object) -> List[str]:
+--        """
+--        创建库存预留条目
+--        """
+--        reservation_entries = []
+--
+--        # 首先尝试直接调用 Sales Order 的方法
+--        if hasattr(sales_order, 'create_stock_reservation_entries'):
+--            sales_order.create_stock_reservation_entries(notify=False)
+--            
+--            # 获取创建的预留条目
+--            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--                StockReservationEntry,
+--            )
+--            entries = frappe.get_all(
+--                "Stock Reservation Entry",
+--                filters={
+--                    "voucher_type": sales_order.doctype,
+--                    "voucher_no": sales_order.name,
+--                    "docstatus": 1
+--                },
+--                pluck="name"
+--            )
+--            reservation_entries = entries
+--
+--        else:
+--            # 备用方案：直接从 stock_reservation_entry 模块调用
+--            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+--                create_stock_reservation_entries_for_sales_order,
+--            )
+--            if 'create_stock_reservation_entries_for_sales_order' in globals():
+--                create_stock_reservation_entries_for_sales_order(sales_order)
+--
+--        return reservation_entries
+--
+--    def check_available_stock(self, item_code: str, warehouse: str, qty: float, company: str) -> bool:
+--        """
+--        检查可用库存
+--        """
+--        from erpnext.stock.stock_balance import get_reserved_qty
+--        
+--        available_qty = frappe.get_cached_value(
+--            "Bin", 
+--            {"item_code": item_code, "warehouse": warehouse}, 
+--            "actual_qty"
+--        ) or 0.0
+--        
+--        reserved_qty = get_reserved_qty(item_code, warehouse)
+--        
+--        return (available_qty - reserved_qty) >= qty
+--
+--    def get_reservation_status(self, voucher_type: str, voucher_no: str) -> List[Dict]:
+--        """
+--        获取预留状态
+--        """
+--        entries = frappe.get_all(
+--            "Stock Reservation Entry",
+--            filters={
+--                "voucher_type": voucher_type,
+--                "voucher_no": voucher_no,
+--                "docstatus": ["!=", 2]
+--            },
+--            fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty", "status"]
+--        )
+--        
+--        return entries
 diff --git a/erpnext/hooks.py b/erpnext/hooks.py
-index bba172e498..7fcfe9ca93 100644
+index 7fcfe9ca93..a87410cfff 100644
 --- a/erpnext/hooks.py
 +++ b/erpnext/hooks.py
-@@ -383,18 +383,6 @@ doc_events = {
- 	"Event": {
- 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
- 	},
--	"Sales Invoice": {
--		"on_submit": [
--			"erpnext.regional.italy.utils.sales_invoice_on_submit",
--		],
--		"on_cancel": [
--			"erpnext.regional.italy.utils.sales_invoice_on_cancel",
--		],
--		"on_trash": "erpnext.regional.check_deletion_permission",
--	},
--	"Purchase Invoice": {
--		"validate": [
--			"erpnext.regional.united_arab_emirates.utils.update_grand_total_for_rcm",
- 			"erpnext.regional.united_arab_emirates.utils.validate_returns",
- 		]
- 	},
-diff --git a/erpnext/hooks_refactoring_example.py b/erpnext/hooks_refactoring_example.py
-deleted file mode 100644
-index a087735412..0000000000
---- a/erpnext/hooks_refactoring_example.py
-+++ /dev/null
-@@ -1,47 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--#
--# hooks.py 更新示例 - 展示如何添加新的事件钩子
--# 【注意】这是一个示例文件，不要直接替换原文件！
--# 将 doc_events 部分的修改应用到实际的 hooks.py 中
--
--# ... (保持 hooks.py 的其他部分不变)
--
--doc_events = {
--    "*": {
--        "validate": [
--            "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
--            "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
--        ],
--    },
--    tuple(period_closing_doctypes): {
--        "validate": "erpnext.accounts.doctype.accounting_period.accounting_period.validate_accounting_period_on_doc_save",
--    },
--    tuple(pre_submit_validation_doctypes): {
--        "validate": "erpnext.accounts.utils.pre_submit_validation",
--    },
--    
--    # ========================================================================
--    # 新增：Sales Order 事件钩子
--    # ========================================================================
--    "Sales Order": {
--        "on_submit": [
--            # 可选：如果使用事件钩子而不是直接在类中调用
--            # "erpnext.selling.events.sales_order_events.on_sales_order_submit",
--        ],
--        "on_cancel": [
--            # 可选：如果使用事件钩子而不是直接在类中调用
--            # "erpnext.selling.events.sales_order_events.on_sales_order_cancel",
--        ],
--        "on_update_after_submit": [],
--    },
--    
--    "Stock Entry": {
--        "on_submit": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
--        "on_cancel": "erpnext.stock.doctype.material_request.material_request.update_completed_and_requested_qty",
--    },
--    
--    # ... (保持 hooks.py 的其他部分不变)
--}
--
--# ... (保持 hooks.py 的其他部分不变)
+@@ -711,3 +711,6 @@ repost_allowed_doctypes = [
+ 	"Payment Entry",
+ 	"Purchase Receipt",
+ ]
++
++# 应用启动时注册事件监听器
++before_request = ["erpnext.events.listeners.register_listeners"]
 diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
-index 4d68a79e62..730fe1a861 100755
+index 730fe1a861..eae4dfbb98 100755
 --- a/erpnext/selling/doctype/sales_order/sales_order.py
 +++ b/erpnext/selling/doctype/sales_order/sales_order.py
-@@ -17,6 +17,8 @@ from frappe.query_builder.functions import Sum
- from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
+@@ -508,6 +508,14 @@ class SalesOrder(SellingController):
+ 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
  
- from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
-+	unlink_inter_company_doc,
-+	update_linked_doc,
- 	unlink_inter_company_doc,
- 	update_linked_doc,
- 	validate_inter_company_party,
-@@ -517,8 +519,6 @@ class SalesOrder(SellingController):
- 		self.update_project()
- 		self.update_prevdoc_status("submit")
+ 	def on_submit(self):
++		# 检查是否启用新架构
++		if frappe.get_cached_value("Selling Settings", None, "use_new_sales_order_architecture"):
++			self._on_submit_new_architecture()
++		else:
++			self._on_submit_legacy()
++
++	def _on_submit_legacy(self):
++		"""原有的提交逻辑（保持向后兼容）"""
+ 		super().update_prevdoc_status()
+ 		self.check_credit_limit()
+ 		self.update_reserved_qty()
+@@ -530,6 +538,21 @@ class SalesOrder(SellingController):
  
--		self.update_blanket_order()
--
- 		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
- 		if self.coupon_code:
- 			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
-@@ -528,6 +528,8 @@ class SalesOrder(SellingController):
- 		if self.get("reserve_stock") and not self.get("is_subcontracted"):
- 			self.create_stock_reservation_entries()
+ 		self.update_blanket_order()
  
-+		self.update_blanket_order()
++	def _on_submit_new_architecture(self):
++		"""新架构的提交逻辑（使用应用服务）"""
++		from erpnext.selling.services import SalesOrderService
++
++		service = SalesOrderService()
++		success, message = service.submit_sales_order(
++			sales_order_name=self.name,
++			enable_stock_reservation=True,
++			enable_accounting=True,
++			enable_notifications=True,
++		)
++
++		if not success:
++			frappe.throw(message)
 +
  	def delete_removed_delivery_schedule_items(self):
  		items = [d.name for d in self.get("items")]
  		doctype = frappe.qb.DocType("Delivery Schedule Item")
-diff --git a/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py b/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
-deleted file mode 100644
-index e35f1ee844..0000000000
---- a/erpnext/selling/doctype/sales_order/sales_order_refactored_example.py
-+++ /dev/null
-@@ -1,153 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--#
--# 重构后的 Sales Order 示例 - 展示如何使用新的编排器
--# 【注意】这是一个示例文件，不要直接替换原文件！
--
--import frappe
--from frappe import _
--from erpnext.controllers.selling_controller import SellingController
--
--
--class SalesOrder(SellingController):
--    """
--    重构后的 Sales Order 类
--    将复杂的提交流程委托给编排器
--    """
--
--    def on_submit(self):
--        """
--        提交方法 - 使用新的编排器
--        """
--        # 检查是否启用新编排器
--        use_new_orchestrator = self._should_use_new_orchestrator()
--
--        if use_new_orchestrator:
--            self._on_submit_new()
--        else:
--            self._on_submit_legacy()
--
--    def _on_submit_new(self):
--        """
--        新的提交流程 - 使用编排器
--        """
--        try:
--            from erpnext.selling.services import SalesOrderOrchestrator
--
--            orchestrator = SalesOrderOrchestrator(self)
--            orchestrator.submit()
--
--        except Exception as e:
--            frappe.log_error(f"New orchestrator failed, falling back to legacy: {str(e)}")
--            self._on_submit_legacy()
--
--    def _on_submit_legacy(self):
--        """
--        原有的提交流程 - 保留作为降级方案
--        """
--        super().update_prevdoc_status()
--        self.check_credit_limit()
--        self.update_reserved_qty()
--        self.delete_removed_delivery_schedule_items()
--
--        frappe.get_cached_doc("Authorization Control").validate_approving_authority(
--            self.doctype, self.company, self.base_grand_total, self
--        )
--        self.update_project()
--        self.update_prevdoc_status("submit")
--
--        self.update_blanket_order()
--
--        from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
--        update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
--        
--        if self.coupon_code:
--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--            update_coupon_code_count(self.coupon_code, "used")
--
--        if self.get("reserve_stock") and not self.get("is_subcontracted"):
--            self.create_stock_reservation_entries()
--
--    def on_cancel(self):
--        """
--        取消方法
--        """
--        use_new_orchestrator = self._should_use_new_orchestrator()
--
--        if use_new_orchestrator:
--            self._on_cancel_new()
--        else:
--            self._on_cancel_legacy()
--
--    def _on_cancel_new(self):
--        """
--        新的取消流程
--        """
--        try:
--            from erpnext.selling.events import on_sales_order_cancel
--            on_sales_order_cancel(self)
--        except Exception as e:
--            frappe.log_error(f"New cancel flow failed, falling back to legacy: {str(e)}")
--            self._on_cancel_legacy()
--
--    def _on_cancel_legacy(self):
--        """
--        原有的取消流程
--        """
--        self.ignore_linked_doctypes = (
--            "GL Entry",
--            "Stock Ledger Entry",
--            "Payment Ledger Entry",
--            "Advance Payment Ledger Entry",
--            "Unreconcile Payment",
--            "Unreconcile Payment Entries",
--        )
--        super().on_cancel()
--        super().update_prevdoc_status()
--        if self.status == "Closed":
--            frappe.throw(_("Closed order cannot be cancelled. Unclose to cancel."))
--
--        self.delete_delivery_schedule_items()
--        self.check_nextdoc_docstatus()
--        self.update_reserved_qty()
--        self.update_project()
--        self.update_prevdoc_status("cancel")
--
--        self.db_set("status", "Cancelled")
--
--        self.update_blanket_order()
--        self.cancel_stock_reservation_entries()
--
--        from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
--        unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
--        
--        if self.coupon_code:
--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--            update_coupon_code_count(self.coupon_code, "cancelled")
--
--    def _should_use_new_orchestrator(self) -> bool:
--        """
--        检查是否应该使用新编排器
--        可以通过配置或特性开关控制
--        """
--        # 方式 1: 通过系统设置
--        try:
--            return frappe.get_cached_value(
--                "Selling Settings", 
--                None, 
--                "use_new_sales_order_orchestrator"
--            ) or False
--        except Exception:
--            pass
--
--        # 方式 2: 通过全局标志
--        if hasattr(frappe.local, 'flags') and frappe.local.flags.use_new_orchestrator:
--            return True
--
--        # 方式 3: 通过环境变量
--        import os
--        if os.getenv('ERP_USE_NEW_ORCHESTRATOR') == '1':
--            return True
--
--        # 默认使用旧方式（安全起见）
--        return False
-diff --git a/erpnext/selling/events/__init__.py b/erpnext/selling/events/__init__.py
-deleted file mode 100644
-index 46d036b26e..0000000000
---- a/erpnext/selling/events/__init__.py
-+++ /dev/null
-@@ -1,14 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--from erpnext.selling.events.sales_order_events import (
--    on_sales_order_submit,
--    on_sales_order_cancel,
--    handle_sales_order_notification,
--)
--
--__all__ = [
--    "on_sales_order_submit",
--    "on_sales_order_cancel",
--    "handle_sales_order_notification",
--]
-diff --git a/erpnext/selling/events/sales_order_events.py b/erpnext/selling/events/sales_order_events.py
-deleted file mode 100644
-index 047cbfeadd..0000000000
---- a/erpnext/selling/events/sales_order_events.py
-+++ /dev/null
-@@ -1,120 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--import frappe
--from frappe import _
--from typing import Dict
--
--
--def on_sales_order_submit(doc, method=None):
--    """
--    Sales Order 提交时的事件处理器
--    通过 ERPNext 的 doc_events 钩子调用
--    """
--    try:
--        from erpnext.selling.services import SalesOrderOrchestrator
--
--        # 使用编排器处理提交流程
--        orchestrator = SalesOrderOrchestrator(doc)
--        orchestrator.submit()
--
--        frappe.log_error(f"Sales Order {doc.name} submitted via orchestrator")
--
--    except Exception as e:
--        frappe.log_error(f"Error in on_sales_order_submit: {str(e)}")
--        raise
--
--
--def on_sales_order_cancel(doc, method=None):
--    """
--    Sales Order 取消时的事件处理器
--    """
--    try:
--        # 取消库存预留
--        from erpnext.stock.services import StockReservationService
--
--        reservation_service = StockReservationService()
--        reservation_service.cancel_reservation_for_sales_order(doc)
--
--        # 清理其他关联资源
--        _cleanup_on_cancel(doc)
--
--        frappe.log_error(f"Sales Order {doc.name} cancelled successfully")
--
--    except Exception as e:
--        frappe.log_error(f"Error in on_sales_order_cancel: {str(e)}")
--
--
--def _cleanup_on_cancel(doc):
--    """
--    取消时的清理工作
--    """
--    # 恢复优惠券
--    if doc.coupon_code:
--        try:
--            from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--            update_coupon_code_count(doc.coupon_code, "cancelled")
--        except Exception as e:
--            frappe.log_error(f"Failed to revert coupon code: {str(e)}")
--
--
--@frappe.whitelist()
--def handle_sales_order_notification(event_data: Dict):
--    """
--    处理 Sales Order 相关的通知（异步）
--    """
--    event_type = event_data.get("event_type")
--    sales_order_name = event_data.get("sales_order_name")
--
--    if not sales_order_name:
--        return
--
--    # 根据事件类型发送不同的通知
--    if event_type == "submitted":
--        _send_submission_notification(sales_order_name)
--    elif event_type == "cancelled":
--        _send_cancellation_notification(sales_order_name)
--
--
--def _send_submission_notification(sales_order_name: str):
--    """
--    发送提交通知
--    """
--    try:
--        doc = frappe.get_doc("Sales Order", sales_order_name)
--        
--        # 这里可以实现具体的通知逻辑
--        # 比如发送邮件、创建待办事项等
--        frappe.publish_realtime(
--            "sales_order_submission_complete",
--            {
--                "name": doc.name,
--                "customer": doc.customer,
--                "grand_total": doc.grand_total
--            },
--            user=frappe.session.user
--        )
--
--    except Exception as e:
--        frappe.log_error(f"Failed to send submission notification: {str(e)}")
--
--
--def _send_cancellation_notification(sales_order_name: str):
--    """
--    发送取消通知
--    """
--    try:
--        doc = frappe.get_doc("Sales Order", sales_order_name)
--        
--        frappe.publish_realtime(
--            "sales_order_cancelled",
--            {
--                "name": doc.name,
--                "customer": doc.customer,
--                "reason": "Cancelled by user"
--            },
--            user=frappe.session.user
--        )
--
--    except Exception as e:
--        frappe.log_error(f"Failed to send cancellation notification: {str(e)}")
-diff --git a/erpnext/selling/services/__init__.py b/erpnext/selling/services/__init__.py
-deleted file mode 100644
-index 192b711339..0000000000
---- a/erpnext/selling/services/__init__.py
-+++ /dev/null
-@@ -1,22 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--from erpnext.selling.services.sales_order_orchestrator import (
--    SalesOrderOrchestrator,
--    SalesOrderSubmitContext,
--)
--from erpnext.selling.services.transaction_manager import (
--    TransactionManager,
--    TransactionStep,
--    TransactionContext,
--    create_sales_order_transaction,
--)
--
--__all__ = [
--    "SalesOrderOrchestrator",
--    "SalesOrderSubmitContext",
--    "TransactionManager",
--    "TransactionStep",
--    "TransactionContext",
--    "create_sales_order_transaction",
--]
-diff --git a/erpnext/selling/services/sales_order_orchestrator.py b/erpnext/selling/services/sales_order_orchestrator.py
-deleted file mode 100644
-index df5ee14e1b..0000000000
---- a/erpnext/selling/services/sales_order_orchestrator.py
-+++ /dev/null
-@@ -1,201 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--import frappe
--from frappe import _
--from typing import Dict, List, Optional
--from dataclasses import dataclass
--
--
--@dataclass
--class SalesOrderSubmitContext:
--    """上下文数据结构，在各个步骤间传递数据"""
--    sales_order: object
--    stock_reservation_result: Optional[Dict] = None
--    accounting_result: Optional[Dict] = None
--    notification_result: Optional[Dict] = None
--    rollback_steps: List[callable] = None
--    errors: List[str] = None
--
--    def __post_init__(self):
--        self.rollback_steps = self.rollback_steps or []
--        self.errors = self.errors or []
--
--
--class SalesOrderOrchestrator:
--    """
--    Sales Order 提交流程编排器
--    作为唯一的编排入口，协调各个领域服务
--    """
--
--    def __init__(self, sales_order: object):
--        self.sales_order = sales_order
--        self.context = SalesOrderSubmitContext(sales_order=sales_order)
--
--    def submit(self):
--        """
--        主编排方法，按顺序执行提交流程
--        """
--        try:
--            # 步骤 1: 验证前置条件
--            self._validate_prerequisites()
--
--            # 步骤 2: 更新前置文档状态
--            self._update_prevdoc_status()
--
--            # 步骤 3: 检查信用额度
--            self._check_credit_limit()
--
--            # 步骤 4: 库存预留（添加回滚）
--            self._reserve_stock()
--
--            # 步骤 5: 更新库存预留数量
--            self._update_reserved_qty()
--
--            # 步骤 6: 审批控制
--            self._validate_approving_authority()
--
--            # 步骤 7: 更新项目
--            self._update_project()
--
--            # 步骤 8: 更新一揽子订单
--            self._update_blanket_order()
--
--            # 步骤 9: 会计处理（添加回滚）
--            self._process_accounting()
--
--            # 步骤 10: 更新关联文档
--            self._update_linked_doc()
--
--            # 步骤 11: 更新优惠券
--            self._update_coupon_code()
--
--            # 步骤 12: 发送通知
--            self._send_notifications()
--
--            return True
--
--        except Exception as e:
--            # 发生错误时执行回滚
--            self._rollback()
--            frappe.log_error(f"Sales Order submission failed: {str(e)}")
--            raise
--
--    def _validate_prerequisites(self):
--        """验证前置条件"""
--        from erpnext.selling.doctype.sales_order.sales_order import check_modified_date
--        check_modified_date(self.sales_order)
--
--    def _update_prevdoc_status(self):
--        """更新前置文档状态"""
--        self.sales_order.update_prevdoc_status()
--
--    def _check_credit_limit(self):
--        """检查信用额度"""
--        self.sales_order.check_credit_limit()
--
--    def _reserve_stock(self):
--        """库存预留 - 使用领域服务"""
--        from erpnext.stock.services.stock_reservation_service import StockReservationService
--
--        if self.sales_order.get("reserve_stock") and not self.sales_order.get("is_subcontracted"):
--            try:
--                reservation_service = StockReservationService()
--                result = reservation_service.reserve_for_sales_order(self.sales_order)
--                self.context.stock_reservation_result = result
--
--                # 注册回滚步骤
--                self.context.rollback_steps.append(
--                    lambda: reservation_service.cancel_reservation_for_sales_order(self.sales_order)
--                )
--
--            except Exception as e:
--                self.context.errors.append(f"Stock reservation failed: {str(e)}")
--                raise
--
--    def _update_reserved_qty(self):
--        """更新库存预留数量"""
--        self.sales_order.update_reserved_qty()
--
--    def _validate_approving_authority(self):
--        """验证审批权限"""
--        if hasattr(frappe, "get_cached_doc"):
--            authorization_control = frappe.get_cached_doc("Authorization Control")
--            if hasattr(authorization_control, "validate_approving_authority"):
--                authorization_control.validate_approving_authority(
--                    self.sales_order.doctype, 
--                    self.sales_order.company, 
--                    self.sales_order.base_grand_total, 
--                    self.sales_order
--                )
--
--    def _update_project(self):
--        """更新项目"""
--        self.sales_order.update_project()
--
--    def _update_blanket_order(self):
--        """更新一揽子订单"""
--        self.sales_order.update_blanket_order()
--
--    def _process_accounting(self):
--        """会计处理 - 这里可以扩展为完整的会计领域服务"""
--        # 目前会计处理在 ERPNext 中更多是在 Sales Invoice 阶段
--        # 这里可以预留位置，为未来的会计处理扩展
--        pass
--
--    def _update_linked_doc(self):
--        """更新关联文档"""
--        if hasattr(self.sales_order, 'update_linked_doc'):
--            self.sales_order.update_linked_doc(
--                self.sales_order.doctype, 
--                self.sales_order.name, 
--                self.sales_order.inter_company_order_reference
--            )
--        else:
--            from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
--            update_linked_doc(
--                self.sales_order.doctype, 
--                self.sales_order.name, 
--                self.sales_order.inter_company_order_reference
--            )
--
--    def _update_coupon_code(self):
--        """更新优惠券"""
--        if self.sales_order.coupon_code:
--            try:
--                from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--                update_coupon_code_count(self.sales_order.coupon_code, "used")
--
--                # 注册回滚步骤
--                self.context.rollback_steps.append(
--                    lambda: update_coupon_code_count(self.sales_order.coupon_code, "cancelled")
--                )
--            except Exception as e:
--                self.context.errors.append(f"Coupon code update failed: {str(e)}")
--
--    def _send_notifications(self):
--        """发送通知 - 可以通过事件驱动实现"""
--        # 这里可以触发事件，让通知系统异步处理
--        frappe.publish_realtime(
--            "sales_order_submitted",
--            {
--                "name": self.sales_order.name,
--                "customer": self.sales_order.customer,
--                "company": self.sales_order.company
--            }
--        )
--
--    def _rollback(self):
--        """执行回滚操作"""
--        frappe.log_error(f"Rolling back Sales Order {self.sales_order.name} submission")
--
--        # 按相反顺序执行回滚步骤
--        for rollback_step in reversed(self.context.rollback_steps):
--            try:
--                rollback_step()
--            except Exception as e:
--                frappe.log_error(f"Rollback step failed: {str(e)}")
--
--        # 记录所有错误
--        if self.context.errors:
--            frappe.log_error(f"Sales Order submission errors: {', '.join(self.context.errors)}")
-diff --git a/erpnext/selling/services/transaction_manager.py b/erpnext/selling/services/transaction_manager.py
-deleted file mode 100644
-index 269afabe92..0000000000
---- a/erpnext/selling/services/transaction_manager.py
-+++ /dev/null
-@@ -1,159 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--import frappe
--from frappe import _
--from typing import List, Callable, Optional
--from dataclasses import dataclass, field
--
--
--@dataclass
--class TransactionStep:
--    """事务步骤"""
--    name: str
--    execute: Callable
--    rollback: Optional[Callable] = None
--    executed: bool = False
--    success: bool = False
--
--
--@dataclass
--class TransactionContext:
--    """事务上下文"""
--    steps: List[TransactionStep] = field(default_factory=list)
--    current_step: int = 0
--    error: Optional[Exception] = None
--
--
--class TransactionManager:
--    """
--    事务管理器 - 提供 Sagas 模式的实现
--    用于处理分布式事务的补偿/回滚
--    """
--
--    def __init__(self, name: str = "SalesOrderTransaction"):
--        self.name = name
--        self.context = TransactionContext()
--
--    def add_step(
--        self,
--        name: str,
--        execute_func: Callable,
--        rollback_func: Optional[Callable] = None
--    ) -> 'TransactionManager':
--        """
--        添加事务步骤
--        
--        Args:
--            name: 步骤名称
--            execute_func: 执行函数
--            rollback_func: 回滚函数（可选）
--        """
--        step = TransactionStep(
--            name=name,
--            execute=execute_func,
--            rollback=rollback_func
--        )
--        self.context.steps.append(step)
--        return self
--
--    def execute(self) -> bool:
--        """
--        执行所有事务步骤
--        失败时自动执行已完成步骤的回滚
--        """
--        frappe.log_error(f"Starting transaction: {self.name}")
--
--        for i, step in enumerate(self.context.steps):
--            self.context.current_step = i
--
--            try:
--                frappe.log_error(f"Executing step: {step.name}")
--                step.execute()
--                step.executed = True
--                step.success = True
--                frappe.log_error(f"Step completed: {step.name}")
--
--            except Exception as e:
--                step.success = False
--                self.context.error = e
--                frappe.log_error(f"Step failed: {step.name}, Error: {str(e)}")
--
--                # 执行回滚
--                self._rollback()
--                raise
--
--        frappe.log_error(f"Transaction completed successfully: {self.name}")
--        return True
--
--    def _rollback(self):
--        """
--        执行回滚操作 - 按相反顺序回滚已成功执行的步骤
--        """
--        frappe.log_error(f"Starting rollback for transaction: {self.name}")
--
--        # 按相反顺序回滚已成功执行的步骤
--        for step in reversed(self.context.steps[:self.context.current_step + 1]):
--            if step.executed and step.success and step.rollback:
--                try:
--                    frappe.log_error(f"Rolling back step: {step.name}")
--                    step.rollback()
--                    frappe.log_error(f"Step rolled back: {step.name}")
--                except Exception as e:
--                    # 回滚失败时记录日志但继续尝试其他回滚
--                    frappe.log_error(
--                        f"Failed to rollback step: {step.name}, Error: {str(e)}"
--                    )
--
--        frappe.log_error(f"Rollback completed for transaction: {self.name}")
--
--    def get_status(self) -> dict:
--        """获取事务状态"""
--        return {
--            "transaction_name": self.name,
--            "total_steps": len(self.context.steps),
--            "current_step": self.context.current_step,
--            "steps": [
--                {
--                    "name": step.name,
--                    "executed": step.executed,
--                    "success": step.success
--                }
--                for step in self.context.steps
--            ],
--            "error": str(self.context.error) if self.context.error else None
--        }
--
--
--def create_sales_order_transaction(sales_order) -> TransactionManager:
--    """
--    为 Sales Order 创建事务管理器
--    """
--    from erpnext.stock.services import StockReservationService
--
--    transaction = TransactionManager("SalesOrderSubmit")
--
--    reservation_service = StockReservationService()
--
--    # 步骤 1: 库存预留
--    transaction.add_step(
--        name="StockReservation",
--        execute_func=lambda: reservation_service.reserve_for_sales_order(sales_order) 
--            if sales_order.get("reserve_stock") and not sales_order.get("is_subcontracted") 
--            else None,
--        rollback_func=lambda: reservation_service.cancel_reservation_for_sales_order(sales_order)
--    )
--
--    # 步骤 2: 优惠券更新
--    if sales_order.coupon_code:
--        from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
--        
--        transaction.add_step(
--            name="CouponUpdate",
--            execute_func=lambda: update_coupon_code_count(sales_order.coupon_code, "used"),
--            rollback_func=lambda: update_coupon_code_count(sales_order.coupon_code, "cancelled")
--        )
--
--    # 可以继续添加更多步骤...
--
--    return transaction
-diff --git a/erpnext/stock/services/__init__.py b/erpnext/stock/services/__init__.py
-deleted file mode 100644
-index c4d29cc83d..0000000000
---- a/erpnext/stock/services/__init__.py
-+++ /dev/null
-@@ -1,12 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--from erpnext.stock.services.stock_reservation_service import (
--    StockReservationService,
--    ReservationResult,
--)
--
--__all__ = [
--    "StockReservationService",
--    "ReservationResult",
--]
-diff --git a/erpnext/stock/services/stock_reservation_service.py b/erpnext/stock/services/stock_reservation_service.py
-deleted file mode 100644
-index 35a7647092..0000000000
---- a/erpnext/stock/services/stock_reservation_service.py
-+++ /dev/null
-@@ -1,137 +0,0 @@
--# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
--# License: GNU General Public License v3. See license.txt
--
--import frappe
--from frappe import _
--from typing import Dict, List, Optional
--from dataclasses import dataclass
--
--
--@dataclass
--class ReservationResult:
--    success: bool
--    reservation_entries: List[str] = None
--    error_message: Optional[str] = None
--
--    def __post_init__(self):
--        self.reservation_entries = self.reservation_entries or []
--
--
--class StockReservationService:
--    """
--    库存预留领域服务
--    封装所有与库存预留相关的业务逻辑
--    """
--
--    def reserve_for_sales_order(self, sales_order: object) -> ReservationResult:
--        """
--        为 Sales Order 预留库存
--        """
--        result = ReservationResult(success=False)
--
--        try:
--            # 调用原有的创建库存预留条目的方法
--            reservation_entries = self._create_reservation_entries(sales_order)
--            
--            result.reservation_entries = reservation_entries
--            result.success = True
--
--            frappe.msgprint(_("Stock Reservation Entries Created"), alert=True, indicator="green")
--
--        except Exception as e:
--            result.error_message = str(e)
--            frappe.log_error(f"Stock reservation failed for Sales Order {sales_order.name}: {str(e)}")
--            raise
--
--        return result
--
--    def cancel_reservation_for_sales_order(self, sales_order: object) -> None:
--        """
--        取消 Sales Order 的库存预留
--        """
--        try:
--            # 调用原有的取消库存预留条目的方法
--            if hasattr(sales_order, 'cancel_stock_reservation_entries'):
--                sales_order.cancel_stock_reservation_entries(notify=False)
--            else:
--                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--                    cancel_stock_reservation_entries,
--                )
--                cancel_stock_reservation_entries(
--                    voucher_type=sales_order.doctype, 
--                    voucher_no=sales_order.name,
--                    notify=False
--                )
--
--            frappe.msgprint(_("Stock Reservation Entries Cancelled"), alert=True, indicator="orange")
--
--        except Exception as e:
--            frappe.log_error(f"Failed to cancel stock reservation for Sales Order {sales_order.name}: {str(e)}")
--            # 取消操作失败不应该阻止回滚，只是记录日志
--
--    def _create_reservation_entries(self, sales_order: object) -> List[str]:
--        """
--        创建库存预留条目
--        """
--        reservation_entries = []
--
--        # 首先尝试直接调用 Sales Order 的方法
--        if hasattr(sales_order, 'create_stock_reservation_entries'):
--            sales_order.create_stock_reservation_entries(notify=False)
--            
--            # 获取创建的预留条目
--            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--                StockReservationEntry,
--            )
--            entries = frappe.get_all(
--                "Stock Reservation Entry",
--                filters={
--                    "voucher_type": sales_order.doctype,
--                    "voucher_no": sales_order.name,
--                    "docstatus": 1
--                },
--                pluck="name"
--            )
--            reservation_entries = entries
--
--        else:
--            # 备用方案：直接从 stock_reservation_entry 模块调用
--            from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
--                create_stock_reservation_entries_for_sales_order,
--            )
--            if 'create_stock_reservation_entries_for_sales_order' in globals():
--                create_stock_reservation_entries_for_sales_order(sales_order)
--
--        return reservation_entries
--
--    def check_available_stock(self, item_code: str, warehouse: str, qty: float, company: str) -> bool:
--        """
--        检查可用库存
--        """
--        from erpnext.stock.stock_balance import get_reserved_qty
--        
--        available_qty = frappe.get_cached_value(
--            "Bin", 
--            {"item_code": item_code, "warehouse": warehouse}, 
--            "actual_qty"
--        ) or 0.0
--        
--        reserved_qty = get_reserved_qty(item_code, warehouse)
--        
--        return (available_qty - reserved_qty) >= qty
--
--    def get_reservation_status(self, voucher_type: str, voucher_no: str) -> List[Dict]:
--        """
--        获取预留状态
--        """
--        entries = frappe.get_all(
--            "Stock Reservation Entry",
--            filters={
--                "voucher_type": voucher_type,
--                "voucher_no": voucher_no,
--                "docstatus": ["!=", 2]
--            },
--            fields=["name", "item_code", "warehouse", "reserved_qty", "delivered_qty", "status"]
--        )
--        
--        return entries
+@@ -538,6 +561,14 @@ class SalesOrder(SellingController):
+ 		).run()
+ 
+ 	def on_cancel(self):
++		# 检查是否启用新架构
++		if frappe.get_cached_value("Selling Settings", None, "use_new_sales_order_architecture"):
++			self._on_cancel_new_architecture()
++		else:
++			self._on_cancel_legacy()
++
++	def _on_cancel_legacy(self):
++		"""原有的取消逻辑（保持向后兼容）"""
+ 		self.ignore_linked_doctypes = (
+ 			"GL Entry",
+ 			"Stock Ledger Entry",
+@@ -569,6 +600,16 @@ class SalesOrder(SellingController):
+ 
+ 			update_coupon_code_count(self.coupon_code, "cancelled")
+ 
++	def _on_cancel_new_architecture(self):
++		"""新架构的取消逻辑（使用应用服务）"""
++		from erpnext.selling.services import SalesOrderService
++
++		service = SalesOrderService()
++		success, message = service.cancel_sales_order(sales_order_name=self.name)
++
++		if not success:
++			frappe.throw(message)
++
+ 	def update_project(self):
+ 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":
+ 			return

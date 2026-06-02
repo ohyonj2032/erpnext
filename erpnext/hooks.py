@@ -711,3 +711,6 @@ repost_allowed_doctypes = [
 	"Payment Entry",
 	"Purchase Receipt",
 ]
+
+# 应用启动时注册事件监听器
+before_request = ["erpnext.events.listeners.register_listeners"]

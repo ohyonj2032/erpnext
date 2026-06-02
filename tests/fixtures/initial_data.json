@@ -1,0 +1,64 @@
+{
+  "items": [
+    {
+      "doctype": "Item",
+      "item_code": "_Test Race Item",
+      "item_name": "_Test Race Item",
+      "item_group": "_Test Item Group",
+      "stock_uom": "_Test UOM",
+      "is_stock_item": 1,
+      "valuation_rate": 100.0,
+      "standard_rate": 100.0
+    }
+  ],
+  "warehouses": [
+    {
+      "doctype": "Warehouse",
+      "warehouse_name": "_Test Race Warehouse",
+      "company": "_Test Company",
+      "is_group": 0,
+      "parent_warehouse": "_Test Warehouse - _TC"
+    }
+  ],
+  "stock_entries": [
+    {
+      "doctype": "Stock Entry",
+      "purpose": "Material Receipt",
+      "company": "_Test Company",
+      "items": [
+        {
+          "item_code": "_Test Race Item",
+          "qty": 100,
+          "t_warehouse": "_Test Race Warehouse - _TC",
+          "basic_rate": 100.0
+        }
+      ]
+    }
+  ],
+  "sales_orders": [
+    {
+      "doctype": "Sales Order",
+      "customer": "_Test Customer",
+      "company": "_Test Company",
+      "currency": "INR",
+      "delivery_date": "+10d",
+      "items": [
+        {
+          "item_code": "_Test Race Item",
+          "warehouse": "_Test Race Warehouse - _TC",
+          "qty": 10,
+          "rate": 100.0
+        }
+      ]
+    }
+  ],
+  "expected_bin_snapshot": {
+    "_Test Race Item": {
+      "_Test Race Warehouse - _TC": {
+        "actual_qty": 100,
+        "reserved_qty": 0,
+        "projected_qty": 100
+      }
+    }
+  }
+}

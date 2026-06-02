@@ -251,8 +251,15 @@ def get_bin_details(bin_name):
 def update_qty(bin_name, args):
 	from erpnext.controllers.stock_controller import future_sle_exists
 
-	bin_details = get_bin_details(bin_name)
-	# actual qty is already updated by processing current voucher
+	bin_details = frappe.db.sql(
+		"""SELECT actual_qty, ordered_qty, reserved_qty, indented_qty, planned_qty,
+			reserved_qty_for_production, reserved_qty_for_sub_contract,
+			reserved_qty_for_production_plan
+		FROM `tabBin` WHERE name = %s FOR UPDATE""",
+		bin_name,
+		as_dict=True,
+	)[0]
+
 	actual_qty = bin_details.actual_qty or 0.0
 
 	# actual qty is not up to date in case of backdated transactions

@@ -505,10 +505,19 @@ class SalesOrder(SellingController):
 			if d.delivered_by_supplier and not d.supplier:
 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
 
+	def before_submit(self):
+		current_docstatus = frappe.db.get_value("Sales Order", self.name, "docstatus")
+		if cint(current_docstatus) != 0:
+			frappe.throw(
+				_("Sales Order {0} has already been submitted or cancelled. Please refresh.").format(
+					self.name
+				)
+			)
+
 	def on_submit(self):
 		super().update_prevdoc_status()
 		self.check_credit_limit()
-		self.update_reserved_qty()
+		self.update_reserved_qty(reserved_qty_delta=1)
 		self.delete_removed_delivery_schedule_items()
 
 		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
@@ -552,7 +561,7 @@ class SalesOrder(SellingController):
 
 		self.delete_delivery_schedule_items()
 		self.check_nextdoc_docstatus()
-		self.update_reserved_qty()
+		self.update_reserved_qty(reserved_qty_delta=-1)
 		self.update_project()
 		self.update_prevdoc_status("cancel")
 
@@ -634,30 +643,77 @@ class SalesOrder(SellingController):
 			if scio:
 				update_scio_status(scio, "Closed" if self.status == "Closed" else None)
 
-	def update_reserved_qty(self, so_item_rows=None):
-		"""update requested qty (before ordered_qty is updated)"""
-		item_wh_list = []
+	def update_reserved_qty(self, so_item_rows=None, reserved_qty_delta=None):
+		"""update requested qty (before ordered_qty is updated)
 
-		def _valid_for_reserve(item_code, warehouse):
+		When reserved_qty_delta is provided, use incremental update with
+		row-level locking to prevent race conditions under concurrent submissions.
+		When reserved_qty_delta is None, fall back to full recomputation.
+		"""
+		from erpnext.stock.stock_balance import update_bin_qty_incremental
+
+		item_wh_qty_map = {}
+
+		def _accumulate_reserve(item_code, warehouse, qty):
 			if (
 				item_code
 				and warehouse
-				and [item_code, warehouse] not in item_wh_list
 				and frappe.get_cached_value("Item", item_code, "is_stock_item")
 			):
-				item_wh_list.append([item_code, warehouse])
+				key = (item_code, warehouse)
+				item_wh_qty_map[key] = item_wh_qty_map.get(key, 0) + qty
 
-		for d in self.get("items"):
-			if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
-				if self.has_product_bundle(d.item_code):
-					for p in self.get("packed_items"):
-						if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
-							_valid_for_reserve(p.item_code, p.warehouse)
-				else:
-					_valid_for_reserve(d.item_code, d.warehouse)
+		if reserved_qty_delta is not None:
+			dont_reserve_on_return = frappe.get_cached_value(
+				"Selling Settings", "Selling Settings", "dont_reserve_sales_order_qty_on_sales_return"
+			)
 
-		for item_code, warehouse in item_wh_list:
-			update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
+			for d in self.get("items"):
+				if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
+					if self.has_product_bundle(d.item_code):
+						for p in self.get("packed_items"):
+							if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
+								so_item_qty = flt(d.qty) or 1
+								so_item_delivered_qty = flt(d.delivered_qty)
+								so_item_returned_qty = flt(d.returned_qty) if dont_reserve_on_return else 0
+								reserve_fraction = max(
+									(so_item_qty - so_item_delivered_qty - so_item_returned_qty) / so_item_qty, 0
+								)
+								_accumulate_reserve(p.item_code, p.warehouse, flt(p.qty) * reserve_fraction)
+					else:
+						so_item_qty = flt(d.qty) or 1
+						so_item_delivered_qty = flt(d.delivered_qty)
+						so_item_returned_qty = flt(d.returned_qty) if dont_reserve_on_return else 0
+						reserve_fraction = max(
+							(so_item_qty - so_item_delivered_qty - so_item_returned_qty) / so_item_qty, 0
+						)
+						_accumulate_reserve(d.item_code, d.warehouse, flt(d.stock_qty) * reserve_fraction)
+
+			for (item_code, warehouse), qty in item_wh_qty_map.items():
+				update_bin_qty_incremental(item_code, warehouse, flt(qty) * reserved_qty_delta)
+		else:
+			item_wh_list = []
+
+			def _valid_for_reserve(item_code, warehouse):
+				if (
+					item_code
+					and warehouse
+					and [item_code, warehouse] not in item_wh_list
+					and frappe.get_cached_value("Item", item_code, "is_stock_item")
+				):
+					item_wh_list.append([item_code, warehouse])
+
+			for d in self.get("items"):
+				if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
+					if self.has_product_bundle(d.item_code):
+						for p in self.get("packed_items"):
+							if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
+								_valid_for_reserve(p.item_code, p.warehouse)
+					else:
+						_valid_for_reserve(d.item_code, d.warehouse)
+
+			for item_code, warehouse in item_wh_list:
+				update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
 
 	def on_update_after_submit(self):
 		self.calculate_commission()

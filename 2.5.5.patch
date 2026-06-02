@@ -1,0 +1,214 @@
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+index 4d68a79e62..f0ef8e38a8 100755
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -505,10 +505,19 @@ class SalesOrder(SellingController):
+ 			if d.delivered_by_supplier and not d.supplier:
+ 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
+ 
++	def before_submit(self):
++		current_docstatus = frappe.db.get_value("Sales Order", self.name, "docstatus")
++		if cint(current_docstatus) != 0:
++			frappe.throw(
++				_("Sales Order {0} has already been submitted or cancelled. Please refresh.").format(
++					self.name
++				)
++			)
++
+ 	def on_submit(self):
+ 		super().update_prevdoc_status()
+ 		self.check_credit_limit()
+-		self.update_reserved_qty()
++		self.update_reserved_qty(reserved_qty_delta=1)
+ 		self.delete_removed_delivery_schedule_items()
+ 
+ 		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
+@@ -552,7 +561,7 @@ class SalesOrder(SellingController):
+ 
+ 		self.delete_delivery_schedule_items()
+ 		self.check_nextdoc_docstatus()
+-		self.update_reserved_qty()
++		self.update_reserved_qty(reserved_qty_delta=-1)
+ 		self.update_project()
+ 		self.update_prevdoc_status("cancel")
+ 
+@@ -634,30 +643,77 @@ class SalesOrder(SellingController):
+ 			if scio:
+ 				update_scio_status(scio, "Closed" if self.status == "Closed" else None)
+ 
+-	def update_reserved_qty(self, so_item_rows=None):
+-		"""update requested qty (before ordered_qty is updated)"""
+-		item_wh_list = []
++	def update_reserved_qty(self, so_item_rows=None, reserved_qty_delta=None):
++		"""update requested qty (before ordered_qty is updated)
+ 
+-		def _valid_for_reserve(item_code, warehouse):
++		When reserved_qty_delta is provided, use incremental update with
++		row-level locking to prevent race conditions under concurrent submissions.
++		When reserved_qty_delta is None, fall back to full recomputation.
++		"""
++		from erpnext.stock.stock_balance import update_bin_qty_incremental
++
++		item_wh_qty_map = {}
++
++		def _accumulate_reserve(item_code, warehouse, qty):
+ 			if (
+ 				item_code
+ 				and warehouse
+-				and [item_code, warehouse] not in item_wh_list
+ 				and frappe.get_cached_value("Item", item_code, "is_stock_item")
+ 			):
+-				item_wh_list.append([item_code, warehouse])
++				key = (item_code, warehouse)
++				item_wh_qty_map[key] = item_wh_qty_map.get(key, 0) + qty
+ 
+-		for d in self.get("items"):
+-			if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
+-				if self.has_product_bundle(d.item_code):
+-					for p in self.get("packed_items"):
+-						if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
+-							_valid_for_reserve(p.item_code, p.warehouse)
+-				else:
+-					_valid_for_reserve(d.item_code, d.warehouse)
++		if reserved_qty_delta is not None:
++			dont_reserve_on_return = frappe.get_cached_value(
++				"Selling Settings", "Selling Settings", "dont_reserve_sales_order_qty_on_sales_return"
++			)
++
++			for d in self.get("items"):
++				if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
++					if self.has_product_bundle(d.item_code):
++						for p in self.get("packed_items"):
++							if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
++								so_item_qty = flt(d.qty) or 1
++								so_item_delivered_qty = flt(d.delivered_qty)
++								so_item_returned_qty = flt(d.returned_qty) if dont_reserve_on_return else 0
++								reserve_fraction = max(
++									(so_item_qty - so_item_delivered_qty - so_item_returned_qty) / so_item_qty, 0
++								)
++								_accumulate_reserve(p.item_code, p.warehouse, flt(p.qty) * reserve_fraction)
++					else:
++						so_item_qty = flt(d.qty) or 1
++						so_item_delivered_qty = flt(d.delivered_qty)
++						so_item_returned_qty = flt(d.returned_qty) if dont_reserve_on_return else 0
++						reserve_fraction = max(
++							(so_item_qty - so_item_delivered_qty - so_item_returned_qty) / so_item_qty, 0
++						)
++						_accumulate_reserve(d.item_code, d.warehouse, flt(d.stock_qty) * reserve_fraction)
+ 
+-		for item_code, warehouse in item_wh_list:
+-			update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
++			for (item_code, warehouse), qty in item_wh_qty_map.items():
++				update_bin_qty_incremental(item_code, warehouse, flt(qty) * reserved_qty_delta)
++		else:
++			item_wh_list = []
++
++			def _valid_for_reserve(item_code, warehouse):
++				if (
++					item_code
++					and warehouse
++					and [item_code, warehouse] not in item_wh_list
++					and frappe.get_cached_value("Item", item_code, "is_stock_item")
++				):
++					item_wh_list.append([item_code, warehouse])
++
++			for d in self.get("items"):
++				if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
++					if self.has_product_bundle(d.item_code):
++						for p in self.get("packed_items"):
++							if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
++								_valid_for_reserve(p.item_code, p.warehouse)
++					else:
++						_valid_for_reserve(d.item_code, d.warehouse)
++
++			for item_code, warehouse in item_wh_list:
++				update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
+ 
+ 	def on_update_after_submit(self):
+ 		self.calculate_commission()
+diff --git a/erpnext/stock/doctype/bin/bin.py b/erpnext/stock/doctype/bin/bin.py
+index b7393b49cb..64426b4987 100644
+--- a/erpnext/stock/doctype/bin/bin.py
++++ b/erpnext/stock/doctype/bin/bin.py
+@@ -251,8 +251,15 @@ def get_bin_details(bin_name):
+ def update_qty(bin_name, args):
+ 	from erpnext.controllers.stock_controller import future_sle_exists
+ 
+-	bin_details = get_bin_details(bin_name)
+-	# actual qty is already updated by processing current voucher
++	bin_details = frappe.db.sql(
++		"""SELECT actual_qty, ordered_qty, reserved_qty, indented_qty, planned_qty,
++			reserved_qty_for_production, reserved_qty_for_sub_contract,
++			reserved_qty_for_production_plan
++		FROM `tabBin` WHERE name = %s FOR UPDATE""",
++		bin_name,
++		as_dict=True,
++	)[0]
++
+ 	actual_qty = bin_details.actual_qty or 0.0
+ 
+ 	# actual qty is not up to date in case of backdated transactions
+diff --git a/erpnext/stock/stock_balance.py b/erpnext/stock/stock_balance.py
+index ebfa039f82..8fed3af061 100644
+--- a/erpnext/stock/stock_balance.py
++++ b/erpnext/stock/stock_balance.py
+@@ -262,6 +262,10 @@ def get_planned_qty(item_code, warehouse):
+ def update_bin_qty(item_code, warehouse, qty_dict=None):
+ 	from erpnext.stock.utils import get_bin
+ 
++	bin_name = frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse})
++	if bin_name:
++		frappe.db.sql("SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE", bin_name)
++
+ 	bin = get_bin(item_code, warehouse)
+ 	mismatch = False
+ 	for field, value in qty_dict.items():
+@@ -276,6 +280,48 @@ def update_bin_qty(item_code, warehouse, qty_dict=None):
+ 		bin.clear_cache()
+ 
+ 
++def update_bin_qty_incremental(item_code, warehouse, reserved_qty_delta):
++	from erpnext.stock.utils import get_or_make_bin
++
++	bin_name = get_or_make_bin(item_code, warehouse)
++
++	bin_row = frappe.db.sql(
++		"""SELECT reserved_qty, actual_qty, ordered_qty, indented_qty, planned_qty,
++			reserved_qty_for_production, reserved_qty_for_sub_contract,
++			reserved_qty_for_production_plan
++		FROM `tabBin` WHERE name = %s FOR UPDATE""",
++		bin_name,
++		as_dict=True,
++	)
++
++	if not bin_row:
++		return
++
++	bin_row = bin_row[0]
++	new_reserved_qty = flt(bin_row.reserved_qty) + flt(reserved_qty_delta)
++
++	projected_qty = (
++		flt(bin_row.actual_qty)
++		+ flt(bin_row.ordered_qty)
++		+ flt(bin_row.indented_qty)
++		+ flt(bin_row.planned_qty)
++		- flt(new_reserved_qty)
++		- flt(bin_row.reserved_qty_for_production)
++		- flt(bin_row.reserved_qty_for_sub_contract)
++		- flt(bin_row.reserved_qty_for_production_plan)
++	)
++
++	frappe.db.set_value(
++		"Bin",
++		bin_name,
++		{
++			"reserved_qty": new_reserved_qty,
++			"projected_qty": projected_qty,
++		},
++		update_modified=True,
++	)
++
++
+ def set_stock_balance_as_per_serial_no(
+ 	item_code=None, posting_date=None, posting_time=None, fiscal_year=None
+ ):

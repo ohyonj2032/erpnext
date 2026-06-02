@@ -262,6 +262,10 @@ def get_planned_qty(item_code, warehouse):
 def update_bin_qty(item_code, warehouse, qty_dict=None):
 	from erpnext.stock.utils import get_bin
 
+	bin_name = frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse})
+	if bin_name:
+		frappe.db.sql("SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE", bin_name)
+
 	bin = get_bin(item_code, warehouse)
 	mismatch = False
 	for field, value in qty_dict.items():
@@ -274,6 +278,48 @@ def update_bin_qty(item_code, warehouse, qty_dict=None):
 		bin.set_projected_qty()
 		bin.db_update()
 		bin.clear_cache()
+
+
+def update_bin_qty_incremental(item_code, warehouse, reserved_qty_delta):
+	from erpnext.stock.utils import get_or_make_bin
+
+	bin_name = get_or_make_bin(item_code, warehouse)
+
+	bin_row = frappe.db.sql(
+		"""SELECT reserved_qty, actual_qty, ordered_qty, indented_qty, planned_qty,
+			reserved_qty_for_production, reserved_qty_for_sub_contract,
+			reserved_qty_for_production_plan
+		FROM `tabBin` WHERE name = %s FOR UPDATE""",
+		bin_name,
+		as_dict=True,
+	)
+
+	if not bin_row:
+		return
+
+	bin_row = bin_row[0]
+	new_reserved_qty = flt(bin_row.reserved_qty) + flt(reserved_qty_delta)
+
+	projected_qty = (
+		flt(bin_row.actual_qty)
+		+ flt(bin_row.ordered_qty)
+		+ flt(bin_row.indented_qty)
+		+ flt(bin_row.planned_qty)
+		- flt(new_reserved_qty)
+		- flt(bin_row.reserved_qty_for_production)
+		- flt(bin_row.reserved_qty_for_sub_contract)
+		- flt(bin_row.reserved_qty_for_production_plan)
+	)
+
+	frappe.db.set_value(
+		"Bin",
+		bin_name,
+		{
+			"reserved_qty": new_reserved_qty,
+			"projected_qty": projected_qty,
+		},
+		update_modified=True,
+	)
 
 
 def set_stock_balance_as_per_serial_no(

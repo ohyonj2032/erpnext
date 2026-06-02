@@ -1,0 +1,90 @@
+{
+ "actions": [],
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "rule_name",
+  "rule_type",
+  "is_active",
+  "column_break_1",
+  "priority",
+  "timeout_minutes",
+  "section_break_2",
+  "conditions",
+  "section_break_3",
+  "actions"
+ ],
+ "fields": [
+  {
+   "fieldname": "rule_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Rule Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rule_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Rule Type",
+   "options": "Cancellation\nTimeout Release\nManual Reschedule\nStock Reservation\nAuto Convert",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Priority"
+  },
+  {
+   "fieldname": "timeout_minutes",
+   "fieldtype": "Int",
+   "label": "Timeout (Minutes)"
+  },
+  {
+   "fieldname": "section_break_2",
+   "fieldtype": "Section Break",
+   "label": "Conditions (JSON)"
+  },
+  {
+   "fieldname": "conditions",
+   "fieldtype": "Code",
+   "label": "Conditions"
+  },
+  {
+   "fieldname": "section_break_3",
+   "fieldtype": "Section Break",
+   "label": "Actions (JSON)"
+  },
+  {
+   "fieldname": "actions",
+   "fieldtype": "Code",
+   "label": "Actions"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CRM",
+ "name": "Appointment Rule",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

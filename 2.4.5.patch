@@ -1,0 +1,564 @@
+diff --git a/erpnext/crm/doctype/appointment/appointment.json b/erpnext/crm/doctype/appointment/appointment.json
+index 48dd49eae4..47562896fb 100644
+--- a/erpnext/crm/doctype/appointment/appointment.json
++++ b/erpnext/crm/doctype/appointment/appointment.json
+@@ -8,6 +8,12 @@
+  "field_order": [
+   "scheduled_time",
+   "status",
++  "queue_status",
++  "queue_position",
++  "timeout_at",
++  "column_break_queue",
++  "stock_reserved",
++  "linked_sales_order",
+   "customer_details_section",
+   "customer_name",
+   "customer_phone_number",
+@@ -99,10 +105,44 @@
+    "fieldtype": "Dynamic Link",
+    "label": "Party",
+    "options": "appointment_with"
++  },
++  {
++   "default": "Waiting",
++   "fieldname": "queue_status",
++   "fieldtype": "Select",
++   "label": "Queue Status",
++   "options": "Waiting\nConfirmed\nIn Progress\nCompleted\nCancelled\nTimed Out\nRescheduled"
++  },
++  {
++   "fieldname": "queue_position",
++   "fieldtype": "Int",
++   "label": "Queue Position"
++  },
++  {
++   "fieldname": "timeout_at",
++   "fieldtype": "Datetime",
++   "label": "Timeout At"
++  },
++  {
++   "fieldname": "column_break_queue",
++   "fieldtype": "Column Break",
++   "label": "Queue Management"
++  },
++  {
++   "default": "0",
++   "fieldname": "stock_reserved",
++   "fieldtype": "Check",
++   "label": "Stock Reserved"
++  },
++  {
++   "fieldname": "linked_sales_order",
++   "fieldtype": "Link",
++   "label": "Linked Sales Order",
++   "options": "Sales Order"
+   }
+  ],
+  "links": [],
+- "modified": "2024-03-27 13:05:59.300573",
++ "modified": "2026-06-02 10:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "CRM",
+  "name": "Appointment",
+@@ -161,4 +201,4 @@
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 1
+-}
+\ No newline at end of file
++}
+diff --git a/erpnext/crm/doctype/appointment/appointment.py b/erpnext/crm/doctype/appointment/appointment.py
+index 0f7c52688a..3e672da442 100644
+--- a/erpnext/crm/doctype/appointment/appointment.py
++++ b/erpnext/crm/doctype/appointment/appointment.py
+@@ -1,15 +1,16 @@
+ # Copyright (c) 2019, Frappe Technologies Pvt. Ltd. and contributors
+ # For license information, please see license.txt
+ 
+-
++import json
+ from collections import Counter
++from datetime import timedelta
+ 
+ import frappe
+ from frappe import _
+ from frappe.desk.form.assign_to import add as add_assignment
+ from frappe.model.document import Document
+ from frappe.share import add_docshare
+-from frappe.utils import get_url, getdate, now
++from frappe.utils import flt, get_url, getdate, now, now_datetime
+ from frappe.utils.verified_command import get_signed_params
+ 
+ 
+@@ -30,8 +31,13 @@ class Appointment(Document):
+ 		customer_phone_number: DF.Data | None
+ 		customer_skype: DF.Data | None
+ 		party: DF.DynamicLink | None
++		queue_position: DF.Int | None
++		queue_status: DF.Literal["Waiting", "Confirmed", "In Progress", "Completed", "Cancelled", "Timed Out", "Rescheduled"]
+ 		scheduled_time: DF.Datetime
+ 		status: DF.Literal["Open", "Unverified", "Closed"]
++		stock_reserved: DF.Check
++		linked_sales_order: DF.Link | None
++		timeout_at: DF.Datetime | None
+ 	# end: auto-generated types
+ 
+ 	def find_lead_by_email(self):
+@@ -58,7 +64,6 @@ class Appointment(Document):
+ 		if number_of_agents != 0:
+ 			if number_of_appointments_in_same_slot >= number_of_agents:
+ 				frappe.throw(_("Time slot is not available"))
+-		# Link lead
+ 		if not self.party:
+ 			lead = self.find_lead_by_email()
+ 			customer = self.find_customer_by_email()
+@@ -69,17 +74,25 @@ class Appointment(Document):
+ 				self.appointment_with = "Lead"
+ 				self.party = lead
+ 
++		queue_settings = frappe.get_single("Appointment Queue Settings")
++		if queue_settings.enable_queue_management:
++			self.queue_status = "Waiting"
++			self.queue_position = self._calculate_queue_position()
++			timeout_minutes = queue_settings.default_queue_timeout_minutes or 30
++			self.timeout_at = now_datetime() + timedelta(minutes=timeout_minutes)
++
+ 	def after_insert(self):
+ 		if self.party:
+-			# Create Calendar event
+ 			self.auto_assign()
+ 			self.create_calendar_event()
+ 		else:
+-			# Set status to unverified
+ 			self.db_set("status", "Unverified")
+-			# Send email to confirm
+ 			self.send_confirmation_email()
+ 
++		queue_settings = frappe.get_single("Appointment Queue Settings")
++		if queue_settings.enable_queue_management and self.queue_status == "Waiting":
++			self._enqueue_appointment()
++
+ 	def send_confirmation_email(self):
+ 		verify_url = self._get_verify_url()
+ 		template = "confirm_appointment"
+@@ -102,7 +115,6 @@ class Appointment(Document):
+ 			)
+ 
+ 	def on_change(self):
+-		# Sync Calendar
+ 		if not self.calendar_event:
+ 			return
+ 		cal_event = frappe.get_doc("Event", self.calendar_event)
+@@ -112,11 +124,8 @@ class Appointment(Document):
+ 	def set_verified(self, email):
+ 		if email != self.customer_email:
+ 			frappe.throw(_("Email verification failed."))
+-		# Create new lead
+ 		self.create_lead_and_link()
+-		# Remove unverified status
+ 		self.status = "Open"
+-		# Create calender event
+ 		self.auto_assign()
+ 		self.create_calendar_event()
+ 		self.save(ignore_permissions=True)
+@@ -124,7 +133,6 @@ class Appointment(Document):
+ 			frappe.db.commit()
+ 
+ 	def create_lead_and_link(self):
+-		# Return if already linked
+ 		if self.party:
+ 			return
+ 
+@@ -148,15 +156,11 @@ class Appointment(Document):
+ 			)
+ 
+ 		lead.insert(ignore_permissions=True)
+-
+-		# Link lead
+ 		self.party = lead.name
+ 
+ 	def auto_assign(self):
+ 		existing_assignee = self.get_assignee_from_latest_opportunity()
+ 		if existing_assignee:
+-			# If the latest opportunity is assigned to someone
+-			# Assign the appointment to the same
+ 			self.assign_agent(existing_assignee)
+ 			return
+ 		if self._assign:
+@@ -227,45 +231,327 @@ class Appointment(Document):
+ 
+ 		add_assignment({"doctype": self.doctype, "name": self.name, "assign_to": [agent]})
+ 
++	def _calculate_queue_position(self):
++		waiting_count = frappe.db.count(
++			"Appointment",
++			filters={
++				"queue_status": "Waiting",
++				"scheduled_time": ("lte", self.scheduled_time),
++			},
++		)
++		return waiting_count + 1
++
++	def _enqueue_appointment(self):
++		queue_log = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Log",
++				"appointment": self.name,
++				"action": "Enqueued",
++				"queue_position": self.queue_position,
++				"timestamp": now(),
++			}
++		)
++		queue_log.insert(ignore_permissions=True)
++
++	@frappe.whitelist()
++	def confirm_appointment(self, items=None):
++		queue_settings = frappe.get_single("Appointment Queue Settings")
++		if not queue_settings.enable_queue_management:
++			frappe.throw(_("Queue management is not enabled"))
++
++		try:
++			self.queue_status = "Confirmed"
++			self.timeout_at = now_datetime() + timedelta(
++				minutes=queue_settings.reservation_timeout_minutes or 60
++			)
++			self.save(ignore_permissions=True)
++
++			_queue_log_action(self.name, "Confirmed", self.queue_position)
++
++			if queue_settings.enable_stock_reservation and items:
++				_reserve_stock_for_appointment(self, items)
++
++			if queue_settings.enable_auto_convert_to_order:
++				_delayed_order_creation(self.name, queue_settings.order_creation_delay_minutes)
++
++			frappe.db.commit()
++
++		except Exception:
++			frappe.db.rollback()
++			frappe.throw(_("Failed to confirm appointment"))
++
++	@frappe.whitelist()
++	def cancel_appointment(self, reason=None):
++		try:
++			old_status = self.queue_status
++			self.queue_status = "Cancelled"
++			self.status = "Closed"
++			self.save(ignore_permissions=True)
++
++			if self.stock_reserved:
++				_release_stock_reservation(self.name)
++
++			_queue_log_action(self.name, "Cancelled", self.queue_position, reason)
++			_recalculate_queue_positions(self.scheduled_time)
++
++			_apply_rules_for_event(self, "Cancellation", {"reason": reason, "old_status": old_status})
++
++			frappe.db.commit()
++
++		except Exception:
++			frappe.db.rollback()
++			frappe.throw(_("Failed to cancel appointment"))
++
++	@frappe.whitelist()
++	def reschedule_appointment(self, new_scheduled_time, reason=None):
++		try:
++			old_time = self.scheduled_time
++			old_status = self.queue_status
++
++			self.scheduled_time = new_scheduled_time
++			self.queue_status = "Rescheduled"
++			self.queue_position = self._calculate_queue_position()
++			timeout_minutes = frappe.db.get_single_value(
++				"Appointment Queue Settings", "default_queue_timeout_minutes"
++			) or 30
++			self.timeout_at = now_datetime() + timedelta(minutes=timeout_minutes)
++			self.save(ignore_permissions=True)
++
++			if self.stock_reserved:
++				_release_stock_reservation(self.name)
++
++			_queue_log_action(
++				self.name,
++				"Rescheduled",
++				self.queue_position,
++				f"From {old_time} to {new_scheduled_time}. Reason: {reason or 'N/A'}",
++			)
++			_recalculate_queue_positions(old_time)
++
++			_apply_rules_for_event(
++				self,
++				"Manual Reschedule",
++				{"old_time": old_time, "new_time": new_scheduled_time, "reason": reason},
++			)
++
++			frappe.db.commit()
++
++		except Exception:
++			frappe.db.rollback()
++			frappe.throw(_("Failed to reschedule appointment"))
++
++
++def _queue_log_action(appointment_name, action, position, details=None):
++	queue_log = frappe.get_doc(
++		{
++			"doctype": "Appointment Queue Log",
++			"appointment": appointment_name,
++			"action": action,
++			"queue_position": position,
++			"details": details,
++			"timestamp": now(),
++		}
++	)
++	queue_log.insert(ignore_permissions=True)
++
++
++def _recalculate_queue_positions(scheduled_time):
++	waiting_appointments = frappe.get_all(
++		"Appointment",
++		filters={"queue_status": "Waiting", "scheduled_time": scheduled_time},
++		order_by="creation asc",
++		pluck="name",
++	)
++	for idx, appointment_name in enumerate(waiting_appointments, start=1):
++		frappe.db.set_value("Appointment", appointment_name, "queue_position", idx)
++
++
++def _reserve_stock_for_appointment(appointment, items):
++	if not isinstance(items, list):
++		items = json.loads(items)
++
++	for item in items:
++		item_code = item.get("item_code")
++		warehouse = item.get("warehouse")
++		qty = flt(item.get("qty", 1))
+ 
+-def _get_agents_sorted_by_asc_workload(date):
+-	appointments = frappe.get_all("Appointment", fields="*")
+-	agent_list = _get_agent_list_as_strings()
+-	if not appointments:
+-		return agent_list
+-	appointment_counter = Counter(agent_list)
+-	for appointment in appointments:
+-		assign_data = appointment._assign
+-		if isinstance(assign_data, str):
+-			assign_data = assign_data.strip()
+-		if not assign_data:
++		if not item_code or not warehouse:
+ 			continue
+-		assigned_to = frappe.parse_json(assign_data)
+-		if assigned_to and (assigned_to[0] in agent_list) and getdate(appointment.scheduled_time) == date:
+-			appointment_counter[assigned_to[0]] += 1
+-	sorted_agent_list = appointment_counter.most_common()
+-	sorted_agent_list.reverse()
+-	return sorted_agent_list
+-
+-
+-def _get_agent_list_as_strings():
+-	agent_list_as_strings = []
+-	agent_list = frappe.get_doc("Appointment Booking Settings").agent_list
+-	for agent in agent_list:
+-		agent_list_as_strings.append(agent.user)
+-	return agent_list_as_strings
+-
+-
+-def _check_agent_availability(agent_email, scheduled_time):
+-	appointemnts_at_scheduled_time = frappe.get_all("Appointment", filters={"scheduled_time": scheduled_time})
+-	for appointment in appointemnts_at_scheduled_time:
+-		if appointment._assign == agent_email:
++
++		reservation = frappe.get_doc(
++			{
++				"doctype": "Stock Reservation Entry",
++				"item_code": item_code,
++				"warehouse": warehouse,
++				"qty": qty,
++				"voucher_type": "Appointment",
++				"voucher_no": appointment.name,
++				"status": "Reserved",
++			}
++		)
++		reservation.insert(ignore_permissions=True)
++
++	appointment.db_set("stock_reserved", 1)
++	_queue_log_action(appointment.name, "Stock Reserved", appointment.queue_position)
++
++
++def _release_stock_reservation(appointment_name):
++	reservations = frappe.get_all(
++		"Stock Reservation Entry",
++		filters={"voucher_type": "Appointment", "voucher_no": appointment_name, "status": "Reserved"},
++		pluck="name",
++	)
++	for reservation_name in reservations:
++		reservation = frappe.get_doc("Stock Reservation Entry", reservation_name)
++		reservation.status = "Cancelled"
++		reservation.save(ignore_permissions=True)
++
++	frappe.db.set_value("Appointment", appointment_name, "stock_reserved", 0)
++	_queue_log_action(appointment_name, "Stock Released", None)
++
++
++def _delayed_order_creation(appointment_name, delay_minutes):
++	frappe.enqueue(
++		"erpnext.crm.doctype.appointment.appointment._create_sales_order_from_appointment",
++		appointment_name=appointment_name,
++		delay_minutes=delay_minutes,
++		queue="long",
++		job_name=f"Create Sales Order from Appointment {appointment_name}",
++	)
++
++
++def _create_sales_order_from_appointment(appointment_name, delay_minutes):
++	import time
++	time.sleep(delay_minutes * 60)
++
++	appointment = frappe.get_doc("Appointment", appointment_name)
++	if appointment.queue_status != "Confirmed":
++		return
++
++	customer = appointment.party
++	if not customer or appointment.appointment_with != "Customer":
++		return
++
++	sales_order = frappe.get_doc(
++		{
++			"doctype": "Sales Order",
++			"customer": customer,
++			"appointment_reference": appointment_name,
++			"transaction_date": now(),
++		}
++	)
++	sales_order.insert(ignore_permissions=True)
++	sales_order.submit()
++
++	appointment.db_set("linked_sales_order", sales_order.name)
++	_queue_log_action(
++		appointment_name,
++		"Sales Order Created",
++		appointment.queue_position,
++		f"SO: {sales_order.name}",
++	)
++
++
++def _apply_rules_for_event(appointment, event_type, context):
++	queue_settings = frappe.get_single("Appointment Queue Settings")
++	if not queue_settings.rules:
++		return
++
++	active_rules = [
++		r for r in queue_settings.rules
++		if r.rule_type == event_type and r.is_active
++	]
++	active_rules.sort(key=lambda r: r.priority)
++
++	for rule in active_rules:
++		_execute_rule(rule, appointment, context)
++
++
++def _execute_rule(rule, appointment, context):
++	try:
++		if rule.conditions:
++			conditions = json.loads(rule.conditions)
++			if not _evaluate_conditions(conditions, appointment, context):
++				return
++
++		if rule.actions:
++			actions = json.loads(rule.actions)
++			_perform_actions(actions, appointment, context)
++
++		_queue_log_action(
++			appointment.name,
++			f"Rule Executed: {rule.rule_name}",
++			appointment.queue_position,
++		)
++
++	except Exception:
++		frappe.log_error(
++			title=f"Appointment Rule Execution Failed: {rule.rule_name}",
++			message=frappe.get_traceback(),
++		)
++
++
++def _evaluate_conditions(conditions, appointment, context):
++	for key, expected_value in conditions.items():
++		actual_value = getattr(appointment, key, None)
++		if actual_value != expected_value:
+ 			return False
+ 	return True
+ 
+ 
+-def _get_employee_from_user(user):
+-	employee_docname = frappe.db.get_value("Employee", {"user_id": user})
+-	if employee_docname:
+-		return frappe.get_doc("Employee", employee_docname)
+-	return None
++def _perform_actions(actions, appointment, context):
++	for action in actions:
++		action_type = action.get("type")
++		if action_type == "update_status":
++			appointment.queue_status = action.get("status")
++			appointment.save(ignore_permissions=True)
++		elif action_type == "send_notification":
++			_send_appointment_notification(appointment, action)
++		elif action_type == "release_stock":
++			_release_stock_reservation(appointment.name)
++		elif action_type == "create_order":
++			_create_sales_order_from_appointment(appointment.name, 0)
++
++
++def _send_appointment_notification(appointment, action_config):
++	recipients = action.get("recipients", [appointment.customer_email])
++	subject = action.get("subject", "Appointment Update")
++	message = action.get("message", "Your appointment status has been updated.")
++
++	frappe.sendmail(
++		recipients=recipients,
++		subject=subject,
++		message=message,
++	)
++
++
++@frappe.whitelist()
++def process_timeout_appointments():
++	expired_appointments = frappe.get_all(
++		"Appointment",
++		filters={
++			"queue_status": ("in", ["Waiting", "Confirmed"]),
++			"timeout_at": ("<", now_datetime()),
++		},
++		pluck="name",
++	)
++
++	for appointment_name in expired_appointments:
++		appointment = frappe.get_doc("Appointment", appointment_name)
++		appointment.queue_status = "Timed Out"
++		appointment.save(ignore_permissions=True)
++
++		if appointment.stock_reserved:
++			_release_stock_reservation(appointment_name)
++
++		_recalculate_queue_positions(appointment.scheduled_time)
++
++		_apply_rules_for_event(
++			appointment,
++			"Timeout Release",
++			{"timeout_at": appointment.timeout_at},
++		)
++
++		_queue_log_action(appointment_name, "Timed Out", appointment.queue_position)
++
++	return len(expired_appointments)
+diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+index bba172e498..b6509d136d 100644
+--- a/erpnext/hooks.py
++++ b/erpnext/hooks.py
+@@ -501,6 +501,7 @@ scheduler_events = {
+ 		"erpnext.manufacturing.doctype.bom_update_tool.bom_update_tool.auto_update_latest_price_in_all_boms",
+ 		"erpnext.crm.utils.open_leads_opportunities_based_on_todays_event",
+ 		"erpnext.assets.doctype.asset.depreciation.post_depreciation_entries",
++		"erpnext.crm.doctype.appointment.appointment.process_timeout_appointments",
+ 	],
+ 	"weekly": [
+ 		"erpnext.accounts.utils.auto_create_exchange_rate_revaluation_weekly",

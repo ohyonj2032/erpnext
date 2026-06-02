@@ -1,0 +1,105 @@
+{
+ "actions": [],
+ "autoname": "field:doctype_name",
+ "creation": "2026-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enable_queue_management",
+  "column_break_1",
+  "default_queue_timeout_minutes",
+  "section_break_2",
+  "enable_stock_reservation",
+  "column_break_3",
+  "reservation_timeout_minutes",
+  "section_break_4",
+  "enable_auto_convert_to_order",
+  "column_break_5",
+  "order_creation_delay_minutes",
+  "section_break_6",
+  "rules"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enable_queue_management",
+   "fieldtype": "Check",
+   "label": "Enable Queue Management"
+  },
+  {
+   "default": "30",
+   "fieldname": "default_queue_timeout_minutes",
+   "fieldtype": "Int",
+   "label": "Default Queue Timeout (Minutes)"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_stock_reservation",
+   "fieldtype": "Check",
+   "label": "Enable Stock Reservation on Confirmation"
+  },
+  {
+   "default": "60",
+   "fieldname": "reservation_timeout_minutes",
+   "fieldtype": "Int",
+   "label": "Stock Reservation Timeout (Minutes)"
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_auto_convert_to_order",
+   "fieldtype": "Check",
+   "label": "Auto Convert to Sales Order"
+  },
+  {
+   "default": "15",
+   "fieldname": "order_creation_delay_minutes",
+   "fieldtype": "Int",
+   "label": "Order Creation Delay (Minutes)"
+  },
+  {
+   "fieldname": "column_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_6",
+   "fieldtype": "Section Break",
+   "label": "Active Rules"
+  },
+  {
+   "fieldname": "rules",
+   "fieldtype": "Table",
+   "label": "Appointment Rules",
+   "options": "Appointment Rule"
+  }
+ ],
+ "issingle": 1,
+ "modified": "2026-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CRM",
+ "name": "Appointment Queue Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -8,6 +8,12 @@
  "field_order": [
   "scheduled_time",
   "status",
+  "queue_status",
+  "queue_position",
+  "timeout_at",
+  "column_break_queue",
+  "stock_reserved",
+  "linked_sales_order",
   "customer_details_section",
   "customer_name",
   "customer_phone_number",
@@ -99,10 +105,44 @@
    "fieldtype": "Dynamic Link",
    "label": "Party",
    "options": "appointment_with"
+  },
+  {
+   "default": "Waiting",
+   "fieldname": "queue_status",
+   "fieldtype": "Select",
+   "label": "Queue Status",
+   "options": "Waiting\nConfirmed\nIn Progress\nCompleted\nCancelled\nTimed Out\nRescheduled"
+  },
+  {
+   "fieldname": "queue_position",
+   "fieldtype": "Int",
+   "label": "Queue Position"
+  },
+  {
+   "fieldname": "timeout_at",
+   "fieldtype": "Datetime",
+   "label": "Timeout At"
+  },
+  {
+   "fieldname": "column_break_queue",
+   "fieldtype": "Column Break",
+   "label": "Queue Management"
+  },
+  {
+   "default": "0",
+   "fieldname": "stock_reserved",
+   "fieldtype": "Check",
+   "label": "Stock Reserved"
+  },
+  {
+   "fieldname": "linked_sales_order",
+   "fieldtype": "Link",
+   "label": "Linked Sales Order",
+   "options": "Sales Order"
   }
  ],
  "links": [],
- "modified": "2024-03-27 13:05:59.300573",
+ "modified": "2026-06-02 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "CRM",
  "name": "Appointment",

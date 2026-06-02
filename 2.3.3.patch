@@ -1,3 +1,128 @@
 diff --git a/2.3.3.patch b/2.3.3.patch
-new file mode 100644
-index 0000000000..e69de29bb2
+index 05eb5fecc1..e69de29bb2 100644
+--- a/2.3.3.patch
++++ b/2.3.3.patch
+@@ -1,3 +0,0 @@
+-diff --git a/2.3.3.patch b/2.3.3.patch
+-new file mode 100644
+-index 0000000000..e69de29bb2
+diff --git a/erpnext/accounts/doctype/pricing_rule/utils.py b/erpnext/accounts/doctype/pricing_rule/utils.py
+index 82f269d6da..c0478836bc 100644
+--- a/erpnext/accounts/doctype/pricing_rule/utils.py
++++ b/erpnext/accounts/doctype/pricing_rule/utils.py
+@@ -756,6 +756,14 @@ def validate_coupon_code(coupon_name):
+ 		frappe.throw(_("Sorry, this coupon code is no longer valid"))
+ 
+ 
++def update_coupon_code_count_on_submit(doc, method=None):
++	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
++		update_coupon_code_count(doc.coupon_code, "used")
++
++def update_coupon_code_count_on_cancel(doc, method=None):
++	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
++		update_coupon_code_count(doc.coupon_code, "cancelled")
++
+ def update_coupon_code_count(coupon_name, transaction_type):
+ 	coupon = frappe.get_doc("Coupon Code", coupon_name)
+ 	if coupon:
+diff --git a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
+index db1e56a2b7..ababe1d2c7 100644
+--- a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
++++ b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
+@@ -2485,6 +2485,14 @@ def update_linked_doc(doctype, name, inter_company_reference):
+ 		frappe.db.set_value(doctype, inter_company_reference, ref_field, name)
+ 
+ 
++def unlink_inter_company_doc_on_cancel(doc, method=None):
++	if doc.doctype == "Sales Order":
++		unlink_inter_company_doc(doc.doctype, doc.name, doc.inter_company_order_reference)
++
++def update_linked_doc_on_submit(doc, method=None):
++	if doc.doctype == "Sales Order":
++		update_linked_doc(doc.doctype, doc.name, doc.inter_company_order_reference)
++
+ def unlink_inter_company_doc(doctype, name, inter_company_reference):
+ 	if doctype in ["Sales Invoice", "Purchase Invoice"]:
+ 		ref_doc = "Purchase Invoice" if doctype == "Sales Invoice" else "Sales Invoice"
+diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+index bba172e498..9f88e584d5 100644
+--- a/erpnext/hooks.py
++++ b/erpnext/hooks.py
+@@ -383,6 +383,18 @@ doc_events = {
+ 	"Event": {
+ 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
+ 	},
++	"Sales Order": {
++		"on_submit": [
++			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.reserve_stock_on_submit",
++			"erpnext.accounts.doctype.sales_invoice.sales_invoice.update_linked_doc_on_submit",
++			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_submit",
++		],
++		"on_cancel": [
++			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.cancel_reserve_stock_on_cancel",
++			"erpnext.accounts.doctype.sales_invoice.sales_invoice.unlink_inter_company_doc_on_cancel",
++			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_cancel",
++		],
++	},
+ 	"Sales Invoice": {
+ 		"on_submit": [
+ 			"erpnext.regional.italy.utils.sales_invoice_on_submit",
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+index 4d68a79e62..4d3197938b 100755
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -17,8 +17,6 @@ from frappe.query_builder.functions import Sum
+ from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
+ 
+ from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
+-	unlink_inter_company_doc,
+-	update_linked_doc,
+ 	validate_inter_company_party,
+ )
+ from erpnext.accounts.party import get_party_account
+@@ -519,15 +517,6 @@ class SalesOrder(SellingController):
+ 
+ 		self.update_blanket_order()
+ 
+-		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
+-		if self.coupon_code:
+-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+-
+-			update_coupon_code_count(self.coupon_code, "used")
+-
+-		if self.get("reserve_stock") and not self.get("is_subcontracted"):
+-			self.create_stock_reservation_entries()
+-
+ 	def delete_removed_delivery_schedule_items(self):
+ 		items = [d.name for d in self.get("items")]
+ 		doctype = frappe.qb.DocType("Delivery Schedule Item")
+@@ -559,13 +548,6 @@ class SalesOrder(SellingController):
+ 		self.db_set("status", "Cancelled")
+ 
+ 		self.update_blanket_order()
+-		self.cancel_stock_reservation_entries()
+-
+-		unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
+-		if self.coupon_code:
+-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+-
+-			update_coupon_code_count(self.coupon_code, "cancelled")
+ 
+ 	def update_project(self):
+ 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":
+diff --git a/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py b/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
+index 8fb7a375dc..8c92b7b3f4 100644
+--- a/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
++++ b/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
+@@ -1927,3 +1927,11 @@ def get_reserved_materials(voucher_no):
+ 	)
+ 
+ 	return query.run(as_dict=True)
++
++def reserve_stock_on_submit(doc, method=None):
++	if doc.doctype == "Sales Order" and doc.get("reserve_stock") and not doc.get("is_subcontracted"):
++		doc.create_stock_reservation_entries()
++
++def cancel_reserve_stock_on_cancel(doc, method=None):
++	if doc.doctype == "Sales Order":
++		doc.cancel_stock_reservation_entries()

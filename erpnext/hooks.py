@@ -383,6 +383,18 @@ doc_events = {
 	"Event": {
 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
 	},
+	"Sales Order": {
+		"on_submit": [
+			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.reserve_stock_on_submit",
+			"erpnext.accounts.doctype.sales_invoice.sales_invoice.update_linked_doc_on_submit",
+			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_submit",
+		],
+		"on_cancel": [
+			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.cancel_reserve_stock_on_cancel",
+			"erpnext.accounts.doctype.sales_invoice.sales_invoice.unlink_inter_company_doc_on_cancel",
+			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_cancel",
+		],
+	},
 	"Sales Invoice": {
 		"on_submit": [
 			"erpnext.regional.italy.utils.sales_invoice_on_submit",

@@ -1927,3 +1927,11 @@ def get_reserved_materials(voucher_no):
 	)
 
 	return query.run(as_dict=True)
+
+def reserve_stock_on_submit(doc, method=None):
+	if doc.doctype == "Sales Order" and doc.get("reserve_stock") and not doc.get("is_subcontracted"):
+		doc.create_stock_reservation_entries()
+
+def cancel_reserve_stock_on_cancel(doc, method=None):
+	if doc.doctype == "Sales Order":
+		doc.cancel_stock_reservation_entries()

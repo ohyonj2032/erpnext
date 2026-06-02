@@ -17,8 +17,6 @@ from frappe.query_builder.functions import Sum
 from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
 
 from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
-	unlink_inter_company_doc,
-	update_linked_doc,
 	validate_inter_company_party,
 )
 from erpnext.accounts.party import get_party_account
@@ -519,15 +517,6 @@ class SalesOrder(SellingController):
 
 		self.update_blanket_order()
 
-		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
-		if self.coupon_code:
-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
-
-			update_coupon_code_count(self.coupon_code, "used")
-
-		if self.get("reserve_stock") and not self.get("is_subcontracted"):
-			self.create_stock_reservation_entries()
-
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]
 		doctype = frappe.qb.DocType("Delivery Schedule Item")
@@ -559,13 +548,6 @@ class SalesOrder(SellingController):
 		self.db_set("status", "Cancelled")
 
 		self.update_blanket_order()
-		self.cancel_stock_reservation_entries()
-
-		unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
-		if self.coupon_code:
-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
-
-			update_coupon_code_count(self.coupon_code, "cancelled")
 
 	def update_project(self):
 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":

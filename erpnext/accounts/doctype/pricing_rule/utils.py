@@ -756,6 +756,14 @@ def validate_coupon_code(coupon_name):
 		frappe.throw(_("Sorry, this coupon code is no longer valid"))
 
 
+def update_coupon_code_count_on_submit(doc, method=None):
+	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
+		update_coupon_code_count(doc.coupon_code, "used")
+
+def update_coupon_code_count_on_cancel(doc, method=None):
+	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
+		update_coupon_code_count(doc.coupon_code, "cancelled")
+
 def update_coupon_code_count(coupon_name, transaction_type):
 	coupon = frappe.get_doc("Coupon Code", coupon_name)
 	if coupon:

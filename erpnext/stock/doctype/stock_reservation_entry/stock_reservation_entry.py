@@ -1625,6 +1625,10 @@ def create_stock_reservation_entries_for_so_items(
 
 	sre_count = 0
 	reserved_qty_details = get_sre_reserved_qty_details_for_voucher("Sales Order", sales_order.name)
+	
+	# 获取当前已存在的库存预约，防止重复创建
+	existing_sres = get_sre_details_for_voucher("Sales Order", sales_order.name)
+	existing_sre_map = {sre.voucher_detail_no: sre for sre in existing_sres}
 
 	for item in items if items_details else sales_order.get("items"):
 		# Skip if `Reserved Stock` is not checked for the item.
@@ -1666,6 +1670,18 @@ def create_stock_reservation_entries_for_so_items(
 				title=_("Stock Reservation"),
 				indicator="yellow",
 			)
+			continue
+		
+		# 防止重复创建库存预约
+		if item.name in existing_sre_map:
+			if not from_voucher_type:
+				frappe.msgprint(
+					_("Row #{0}: Stock reservation already exists for Item {1}.").format(
+						item.idx, frappe.bold(item.item_code)
+					),
+					title=_("Stock Reservation"),
+					indicator="yellow",
+				)
 			continue
 
 		unreserved_qty = get_unreserved_qty(item, reserved_qty_details)
@@ -1777,6 +1793,28 @@ def create_stock_reservation_entries_for_so_items(
 				index += 1
 				picked_qty += qty
 
+		# 在保存前再次检查是否存在重复的库存预约（数据库层面的检查）
+		duplicate_check = frappe.db.exists(
+			"Stock Reservation Entry",
+			{
+				"voucher_type": sales_order.doctype,
+				"voucher_no": sales_order.name,
+				"voucher_detail_no": item.name,
+				"docstatus": ["!=", 2]
+			}
+		)
+		
+		if duplicate_check:
+			if not from_voucher_type:
+				frappe.msgprint(
+					_("Row #{0}: Stock reservation already exists for Item {1}.").format(
+						item.idx, frappe.bold(item.item_code)
+					),
+					title=_("Stock Reservation"),
+					indicator="yellow",
+				)
+			continue
+		
 		sre.save()
 		sre.submit()
 

@@ -508,6 +508,14 @@ class SalesOrder(SellingController):
 	def on_submit(self):
 		super().update_prevdoc_status()
 		self.check_credit_limit()
+		
+		# 如果需要库存预约，先创建并验证库存可用
+		if self.get("reserve_stock") and not self.get("is_subcontracted"):
+			try:
+				self.create_stock_reservation_entries()
+			except Exception as e:
+				frappe.throw(_("库存预约失败，订单无法提交: {0}").format(str(e)))
+		
 		self.update_reserved_qty()
 		self.delete_removed_delivery_schedule_items()
 
@@ -524,9 +532,6 @@ class SalesOrder(SellingController):
 			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
 
 			update_coupon_code_count(self.coupon_code, "used")
-
-		if self.get("reserve_stock") and not self.get("is_subcontracted"):
-			self.create_stock_reservation_entries()
 
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]

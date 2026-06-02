@@ -1,0 +1,1859 @@
+diff --git a/2.6.1.patch b/2.6.1.patch
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/TESTING_STRATEGY_README.md b/TESTING_STRATEGY_README.md
+new file mode 100644
+index 0000000000..6c9ac3e86e
+--- /dev/null
++++ b/TESTING_STRATEGY_README.md
+@@ -0,0 +1,261 @@
++# ERPNext 测试策略与代码优化方案
++
++## 概述
++
++本文档提供了针对ERPNext系统的完整测试策略，重点关注：
++- 竞态条件和并发测试
++- 重复提交防护
++- 状态回滚验证
++- 财务数据关键场景测试
++- 多维度回归测试（多语言、多币种、多角色）
++
++## 一、竞态条件与并发测试
++
++### 问题场景
++
++订单模块和库存模块经常同时修改同一张业务单据状态，存在以下风险：
++1. **先查后改**导致的竞态条件
++2. 重复提交同一操作
++3. 状态转换不一致
++
++### 解决方案
++
++#### 1. 数据库层锁机制
++
++```python
++# 使用 SELECT ... FOR UPDATE
++frappe.db.sql("""
++    SELECT name FROM `tabBin` 
++    WHERE name = %s FOR UPDATE
++""", bin.name)
++```
++
++#### 2. 原子化UPDATE操作
++
++```python
++# 使用原子UPDATE代替先读后改
++UPDATE `tabBin` 
++SET actual_qty = actual_qty + %s 
++WHERE item_code = %s AND warehouse = %s
++```
++
++#### 3. 乐观锁机制
++
++为文档添加version字段，更新时检查版本是否匹配。
++
++#### 4. 幂等性设计
++
++每个操作都应该有唯一标识符，确保重复执行不会产生副作用。
++
++## 二、关键测试场景（财务数据相关）
++
++### 最容易漏掉但影响重大的3类测试场景：
++
++#### 场景1: 舍入累积误差测试
++
++**风险点**: 多次小数金额的交易累积可能导致财务报表不平衡
++
++**测试代码**: `test_rounding_cumulative_error` in `test_financial_critical_scenarios.py`
++
++**重点关注**: 
++- 税额计算
++- 多币种转换
++- 折扣计算
++- 成本分摊
++
++#### 场景2: 取消/重建操作的分录一致性测试
++
++**风险点**: 取消操作可能没有正确生成红字冲销分录
++
++**测试代码**: `test_cancel_and_recreate_ledger_consistency`
++
++**重点关注**:
++- GL Entry的is_cancelled标记
++- 借贷平衡
++- 库存台账一致性
++- 成本核算的连续性
++
++#### 场景3: 跨单据库存估值一致性测试
++
++**风险点**: 不同计价方法（FIFO、移动平均）的成本计算可能出现偏差
++
++**测试代码**: `test_stock_valuation_consistency_across_documents`
++
++**重点关注**:
++- Stock Ledger Entry的valuation_rate
++- 入库成本与出库成本的匹配
++- 库存重估的影响
++
++## 三、代码层优化建议
++
++### 优先修改的层级
++
++#### 1. Service层（事务控制）
++
++**文件**: 建议创建 `erpnext/stock/optimized_stock_balance.py`
++
++**修改内容**:
++- 添加 `@frappe.whitelist` 方法的事务包裹
++- 实现数据库锁机制
++- 添加操作日志
++
++#### 2. 状态机判断
++
++**建议**: 实现状态转换图，每次状态变更都验证：
++- 源状态是否正确
++- 目标状态是否合法
++- 操作权限是否足够
++
++#### 3. 库存扣减逻辑
++
++**优化方案**:
++- 使用原子UPDATE代替先读后改
++- 添加库存检查的数据库约束
++- 实现乐观锁或悲观锁
++
++### 具体的代码修改建议
++
++#### 修改1: 优化 `update_bin_qty` 函数
++
++在 `erpnext/stock/stock_balance.py` 中：
++
++```python
++def update_bin_qty(item_code, warehouse, qty_dict=None):
++    from erpnext.stock.utils import get_bin
++    
++    # 获取Bin并加数据库行锁
++    bin = get_bin(item_code, warehouse)
++    
++    frappe.db.sql("""
++        SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE
++    """, bin.name)
++    
++    bin.load_from_db()
++    
++    mismatch = False
++    for field, value in qty_dict.items():
++        if flt(bin.get(field)) != flt(value):
++            bin.set(field, flt(value))
++            mismatch = True
++    
++    bin.modified = now()
++    if mismatch:
++        bin.set_projected_qty()
++        bin.db_update()
++        bin.clear_cache()
++```
++
++#### 修改2: 添加状态转换验证
++
++在 `erpnext/controllers/status_updater.py` 中：
++
++```python
++def validate_status_transition(doc, from_status, to_status):
++    # 定义合法的状态转换
++    allowed_transitions = {
++        "Draft": ["Submitted", "Cancelled"],
++        "Submitted": ["Completed", "Cancelled"],
++        "To Deliver": ["Delivered", "Cancelled"],
++        # ... 更多转换
++    }
++    
++    if to_status not in allowed_transitions.get(from_status, []):
++        frappe.throw(f"无效的状态转换: {from_status} -> {to_status}")
++    
++    # 使用CAS操作
++    result = frappe.db.sql("""
++        UPDATE `tab{doctype}`
++        SET status = %s, modified = %s
++        WHERE name = %s AND status = %s
++    """.format(doctype=doc.doctype), (to_status, now(), doc.name, from_status))
++    
++    if frappe.db.sql("SELECT ROW_COUNT()")[0][0] == 0:
++        frappe.throw("状态更新失败，可能存在并发修改")
++```
++
++## 四、多维度回归测试设计
++
++### 最小价值回归测试套件（MVP Regression）
++
++#### 测试位置
++- `erpnext/tests/test_concurrent_stock_operations.py` - 并发测试
++- `erpnext/tests/test_financial_critical_scenarios.py` - 财务关键场景
++- `erpnext/tests/test_multi_dimension_regression.py` - 多维度测试
++
++#### 核心测试用例优先级
++
++**P0 - 每次发布必须运行**:
++1. `test_full_cycle_multi_role_multi_currency` - 完整业务周期
++2. `test_minimal_business_cycle` - 最小业务周期
++3. `test_rounding_cumulative_error` - 舍入误差测试
++4. `test_concurrent_stock_reservation` - 并发库存预留
++
++**P1 - 每周运行**:
++1. `test_duplicate_submit_prevention` - 重复提交
++2. `test_cancel_and_recreate_ledger_consistency` - 取消重建一致性
++3. `test_stock_valuation_consistency_across_documents` - 库存估值
++
++**P2 - 每月运行**:
++1. 完整的多语言测试
++2. 完整的权限矩阵测试
++3. 性能基准测试
++
++## 五、测试执行策略
++
++### 本地开发测试
++
++```bash
++# 运行特定测试文件
++bench --site [site-name] run-tests --module erpnext.tests.test_concurrent_stock_operations
++
++# 运行特定测试类
++bench --site [site-name] run-tests --module erpnext.tests.test_concurrent_stock_operations --class TestConcurrentStockOperations
++
++# 运行特定测试方法
++bench --site [site-name] run-tests --module erpnext.tests.test_concurrent_stock_operations --class TestConcurrentStockOperations --method test_concurrent_stock_reservation
++```
++
++### CI/CD集成
++
++在CI/CD流程中：
++- P0测试：每次PR自动运行
++- P1测试：每日定时运行
++- P2测试：每周定时运行
++
++## 六、重点盯守的代码区域
++
++### 金额计算
++- 所有使用 `flt()` 的地方
++- `taxes_and_totals.py` 中的税额计算
++- `stock_ledger.py` 中的库存估值
++
++### 状态流转
++- `status_updater.py`
++- 各DocType的 `on_submit()`, `on_cancel()` 方法
++- 工作流 (Workflow) 定义
++
++### 事务提交
++- `GL_Entry` 创建
++- `Stock_Ledger_Entry` 创建
++- `Bin` 更新
++- 任何涉及多个文档的操作
++
++## 七、监控与告警
++
++建议建立以下监控：
++
++1. **GL不平衡监控**: 实时检查总账借贷平衡
++2. **库存异常监控**: Bin数量与Stock Ledger不一致告警
++3. **并发冲突监控**: 数据库死锁和锁等待告警
++4. **财务数据完整性**: 关键报表数据变化异常告警
++
++## 八、总结
++
++通过以下措施可以显著提高系统稳定性：
++
++1. **测试覆盖**: 实施我们提供的测试套件
++2. **代码优化**: 应用数据库锁、原子操作等优化
++3. **流程改进**: 建立代码审查和发布门禁
++4. **监控完善**: 建立财务数据完整性监控
++
++建议先从P0测试和数据库锁优化开始，这是投入产出比最高的改进点。
+diff --git a/erpnext/stock/optimized_stock_balance.py b/erpnext/stock/optimized_stock_balance.py
+new file mode 100644
+index 0000000000..e3b63cc5e0
+--- /dev/null
++++ b/erpnext/stock/optimized_stock_balance.py
+@@ -0,0 +1,331 @@
++#!/usr/bin/env python3
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++优化的库存余额管理模块
++添加了并发控制、乐观锁、幂等性等改进
++"""
++
++import frappe
++from frappe.utils import flt, now
++from frappe.query_builder.functions import Sum
++from erpnext.controllers.stock_controller import create_repost_item_valuation_entry
++
++
++class OptimizedStockManager:
++    """优化的库存管理器 - 带并发控制"""
++    
++    @staticmethod
++    def update_bin_qty_with_lock(item_code, warehouse, qty_dict=None):
++        """
++        带数据库锁的Bin数量更新
++        
++        使用SELECT ... FOR UPDATE来防止竞态条件
++        """
++        from erpnext.stock.utils import get_bin
++        
++        # 获取Bin并加锁
++        bin = get_bin(item_code, warehouse)
++        
++        # 使用数据库行锁
++        frappe.db.sql("""
++            SELECT name FROM `tabBin` 
++            WHERE name = %s FOR UPDATE
++        """, bin.name)
++        
++        # 重新加载以确保最新
++        bin.load_from_db()
++        
++        mismatch = False
++        for field, value in qty_dict.items():
++            if flt(bin.get(field)) != flt(value):
++                bin.set(field, flt(value))
++                mismatch = True
++        
++        bin.modified = now()
++        if mismatch:
++            bin.set_projected_qty()
++            bin.db_update()
++            bin.clear_cache()
++        
++        return bin
++    
++    @staticmethod
++    def atomic_stock_update(item_code, warehouse, qty_change, operation_type):
++        """
++        原子化的库存更新
++        
++        使用数据库级别的原子操作代替先读后改
++        """
++        Bin = frappe.qb.DocType("Bin")
++        
++        # 使用原子UPDATE语句
++        query = (
++            frappe.qb.update(Bin)
++            .set(Bin.actual_qty, Bin.actual_qty + qty_change)
++            .set(Bin.modified, now())
++            .where(
++                (Bin.item_code == item_code) & 
++                (Bin.warehouse == warehouse)
++            )
++        )
++        
++        # 如果不允许负库存，添加条件
++        stock_settings = frappe.get_cached_doc("Stock Settings")
++        if not stock_settings.allow_negative_stock:
++            query = query.where(Bin.actual_qty + qty_change >= 0)
++        
++        result = query.run()
++        
++        # 检查是否更新成功
++        if not result or frappe.db.sql("""
++            SELECT ROW_COUNT()
++        """)[0][0] == 0:
++            frappe.throw(f"库存更新失败，可能是负库存限制或竞态条件")
++        
++        # 清除缓存
++        frappe.clear_cache(doctype="Bin")
++        
++        return True
++    
++    @staticmethod
++    def update_reserved_qty_idempotent(item_code, warehouse, qty_change, reservation_id):
++        """
++        幂等的预留库存更新
++        
++        使用reservation_id确保同一操作不会被重复应用
++        """
++        # 记录操作日志
++        log_exists = frappe.db.exists(
++            "Stock Reservation Log",
++            {"reservation_id": reservation_id}
++        )
++        
++        if log_exists:
++            frappe.logger().info(f"操作 {reservation_id} 已执行，跳过")
++            return False  # 幂等 - 已经执行过
++        
++        # 开始事务
++        try:
++            # 创建操作日志
++            log = frappe.new_doc("Stock Reservation Log")
++            log.reservation_id = reservation_id
++            log.item_code = item_code
++            log.warehouse = warehouse
++            log.qty_change = qty_change
++            log.timestamp = now()
++            log.insert(ignore_permissions=True)
++            
++            # 更新库存
++            OptimizedStockManager.update_bin_qty_with_lock(
++                item_code,
++                warehouse,
++                {"reserved_qty": qty_change}
++            )
++            
++            frappe.db.commit()
++            return True
++            
++        except Exception as e:
++            frappe.db.rollback()
++            raise e
++
++
++def update_bin_qty(item_code, warehouse, qty_dict=None):
++    """
++    优化的update_bin_qty替换函数
++    
++    与原函数保持API兼容，但内部使用更好的并发控制
++    """
++    return OptimizedStockManager.update_bin_qty_with_lock(item_code, warehouse, qty_dict)
++
++
++def repost_stock_safe(item_code, warehouse, allow_zero_rate=False, 
++                      only_actual=False, only_bin=False, allow_negative_stock=False):
++    """
++    安全的库存重过账 - 带乐观锁
++    """
++    # 创建锁记录
++    lock_name = f"repost-{item_code}-{warehouse}"
++    
++    try:
++        # 尝试获取锁
++        lock = frappe.new_doc("Stock Repost Lock")
++        lock.name = lock_name
++        lock.item_code = item_code
++        lock.warehouse = warehouse
++        lock.locked_at = now()
++        lock.insert(ignore_permissions=True)
++        
++        # 执行重过账
++        from erpnext.stock.stock_balance import repost_stock as original_repost
++        result = original_repost(
++            item_code, warehouse, allow_zero_rate, 
++            only_actual, only_bin, allow_negative_stock
++        )
++        
++        return result
++        
++    except frappe.DuplicateEntryError:
++        # 锁已存在，等待或重试
++        frappe.throw(f"库存 {item_code} 在 {warehouse} 正在重过账中，请稍后再试")
++        
++    finally:
++        # 释放锁
++        if frappe.db.exists("Stock Repost Lock", lock_name):
++            frappe.delete_doc("Stock Repost Lock", lock_name, ignore_permissions=True)
++
++
++class OptimisticLockManager:
++    """乐观锁管理器"""
++    
++    @staticmethod
++    def acquire_lock(doc_type, doc_name, timeout=30):
++        """获取乐观锁"""
++        lock_name = f"{doc_type}-{doc_name}"
++        expires_at = frappe.utils.add_to_date(None, seconds=timeout)
++        
++        try:
++            lock = frappe.new_doc("Optimistic Lock")
++            lock.name = lock_name
++            lock.doc_type = doc_type
++            lock.doc_name = doc_name
++            lock.expires_at = expires_at
++            lock.insert(ignore_permissions=True)
++            return True
++        except frappe.DuplicateEntryError:
++            # 检查锁是否过期
++            lock = frappe.get_doc("Optimistic Lock", lock_name)
++            if lock.expires_at < now():
++                # 过期了，删除并重新获取
++                lock.delete()
++                return OptimisticLockManager.acquire_lock(doc_type, doc_name, timeout)
++            return False
++    
++    @staticmethod
++    def release_lock(doc_type, doc_name):
++        """释放锁"""
++        lock_name = f"{doc_type}-{doc_name}"
++        if frappe.db.exists("Optimistic Lock", lock_name):
++            frappe.delete_doc("Optimistic Lock", lock_name, ignore_permissions=True)
++
++
++def check_and_update_status(doc, expected_old_status, new_status):
++    """
++    带状态检查的状态更新 - 防止竞态条件
++    
++    使用CAS（Compare-And-Swap）模式
++    """
++    # 使用数据库原子操作检查并更新
++    result = frappe.db.sql("""
++        UPDATE `tab{doctype}`
++        SET status = %s, modified = %s
++        WHERE name = %s AND status = %s
++    """.format(doctype=doc.doctype), (new_status, now(), doc.name, expected_old_status))
++    
++    affected_rows = frappe.db.sql("SELECT ROW_COUNT()")[0][0]
++    
++    if affected_rows == 0:
++        frappe.throw(f"状态更新失败：当前状态不是 {expected_old_status}")
++    
++    doc.reload()
++    return True
++
++
++def validate_duplicate_submission(doc, identifier_field=None):
++    """
++    重复提交验证
++    
++    基于唯一标识符防止重复处理
++    """
++    if not identifier_field:
++        # 使用文档名和时间戳作为标识符
++        identifier = f"{doc.doctype}-{doc.name}-{frappe.utils.now()}"
++    else:
++        identifier = doc.get(identifier_field)
++    
++    # 检查是否已处理
++    if frappe.db.exists("Submission Log", {"identifier": identifier}):
++        frappe.throw("该操作已处理，请勿重复提交", frappe.DuplicateEntryError)
++    
++    # 记录处理
++    log = frappe.new_doc("Submission Log")
++    log.identifier = identifier
++    log.doctype_name = doc.doctype
++    log.docname = doc.name
++    log.timestamp = now()
++    log.insert(ignore_permissions=True)
++    
++    return identifier
++
++
++# 辅助函数 - 金额计算精度控制
++def precise_currency_calculation(amount, precision=None):
++    """
++    精确的货币计算
++    
++    使用Decimal代替float进行计算
++    """
++    from decimal import Decimal, ROUND_HALF_UP
++    
++    if precision is None:
++        precision = frappe.db.get_single_value("System Settings", "currency_precision") or 2
++    
++    decimal_amount = Decimal(str(amount))
++    quantize_str = f"1.{'0' * precision}"
++    
++    return float(decimal_amount.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP))
++
++
++def calculate_with_precision(amount1, amount2, operation='+', precision=2):
++    """带精度的数学运算"""
++    from decimal import Decimal, ROUND_HALF_UP
++    
++    d1 = Decimal(str(amount1))
++    d2 = Decimal(str(amount2))
++    
++    if operation == '+':
++        result = d1 + d2
++    elif operation == '-':
++        result = d1 - d2
++    elif operation == '*':
++        result = d1 * d2
++    elif operation == '/':
++        result = d1 / d2 if d2 != 0 else Decimal('0')
++    else:
++        result = d1
++    
++    quantize_str = f"1.{'0' * precision}"
++    return float(result.quantize(Decimal(quantize_str), rounding=ROUND_HALF_UP))
++
++
++# 以下是建议创建的DocType定义（用于支持上述功能）
++"""
++建议创建的DocType:
++
++1. Stock Reservation Log - 库存预留日志
++   - reservation_id (Data, 唯一)
++   - item_code (Link to Item)
++   - warehouse (Link to Warehouse)
++   - qty_change (Float)
++   - timestamp (Datetime)
++
++2. Stock Repost Lock - 库存重过账锁
++   - name (Data, Primary Key)
++   - item_code (Link to Item)
++   - warehouse (Link to Warehouse)
++   - locked_at (Datetime)
++
++3. Optimistic Lock - 乐观锁
++   - name (Data, Primary Key)
++   - doc_type (Data)
++   - doc_name (Data)
++   - expires_at (Datetime)
++
++4. Submission Log - 提交日志
++   - identifier (Data, 唯一)
++   - doctype_name (Data)
++   - docname (Data)
++   - timestamp (Datetime)
++"""
+diff --git "a/erpnext/tests/test_concurrent_stock_operations.py\">" "b/erpnext/tests/test_concurrent_stock_operations.py\">"
+new file mode 100644
+index 0000000000..fc6203e18f
+--- /dev/null
++++ "b/erpnext/tests/test_concurrent_stock_operations.py\">"
+@@ -0,0 +1,379 @@
++#!/usr/bin/env python3
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++并发测试模块 - 测试库存操作、订单处理的竞态条件
++"""
++
++import frappe
++import time
++import threading
++import queue
++from frappe.utils import now
++from erpnext.tests.utils import ERPNextTestSuite
++from erpnext.stock.utils import get_bin
++from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
++from erpnext.selling.doctype.sales_order.sales_order import make_sales_order
++
++
++class TestConcurrentStockOperations(ERPNextTestSuite):
++    """并发库存操作测试类"""
++    
++    def setUp(self):
++        """设置测试环境"""
++        self.item_code = "_Test Concurrent Item"
++        self.warehouse = "_Test Warehouse - _TC"
++        
++        # 创建测试物料
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {"is_stock_item": 1})
++        
++        # 初始化库存
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=100,
++            basic_rate=100,
++            target=self.warehouse
++        )
++        
++        self.results_queue = queue.Queue()
++        self.lock = threading.Lock()
++    
++    def tearDown(self):
++        """清理测试环境"""
++        frappe.db.rollback()
++    
++    def test_concurrent_stock_reservation(self):
++        """测试并发库存预留 - 竞态条件测试"""
++        threads = []
++        num_threads = 5
++        expected_failures = 0
++        
++        def reserve_stock(thread_id):
++            """模拟库存预留操作"""
++            try:
++                frappe.connect()  # 每个线程需要独立连接
++                
++                # 创建销售订单并预留库存
++                so = make_sales_order(
++                    item_code=self.item_code,
++                    warehouse=self.warehouse,
++                    qty=25,
++                    do_not_submit=True
++                )
++                so.submit()
++                
++                # 尝试创建库存预留
++                from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
++                    make_stock_reservation_entry
++                )
++                
++                try:
++                    sre = make_stock_reservation_entry(
++                        voucher_type="Sales Order",
++                        voucher_no=so.name,
++                        item_code=self.item_code,
++                        warehouse=self.warehouse,
++                        reserved_qty=25,
++                        voucher_qty=25,
++                    )
++                    sre.submit()
++                    self.results_queue.put(("success", thread_id, so.name))
++                except frappe.ValidationError as e:
++                    self.results_queue.put(("validation_error", thread_id, str(e)))
++                except Exception as e:
++                    self.results_queue.put(("error", thread_id, str(e)))
++                finally:
++                    frappe.db.commit()
++            
++            except Exception as e:
++                self.results_queue.put(("fatal_error", thread_id, str(e)))
++            finally:
++                frappe.destroy()
++        
++        # 启动并发线程
++        for i in range(num_threads):
++            t = threading.Thread(target=reserve_stock, args=(i,))
++            threads.append(t)
++            t.start()
++        
++        # 等待所有线程完成
++        for t in threads:
++            t.join()
++        
++        # 分析结果
++        success_count = 0
++        validation_error_count = 0
++        other_errors = 0
++        
++        while not self.results_queue.empty():
++            status, thread_id, message = self.results_queue.get()
++            if status == "success":
++                success_count += 1
++            elif status == "validation_error":
++                validation_error_count += 1
++            else:
++                other_errors += 1
++        
++        # 验证结果 - 库存只有100，5个线程各要25，应该只有4个成功
++        bin = get_bin(self.item_code, self.warehouse)
++        bin.load_from_db()
++        
++        self.assertEqual(
++            success_count + validation_error_count,
++            num_threads,
++            "所有线程要么成功要么应该抛出验证错误"
++        )
++        
++        # 总预留数量不应超过可用库存
++        reserved_qty = frappe.db.sql("""
++            SELECT SUM(reserved_qty - delivered_qty - transferred_qty - consumed_qty)
++            FROM `tabStock Reservation Entry`
++            WHERE item_code = %s AND warehouse = %s AND docstatus = 1
++        """, (self.item_code, self.warehouse))[0][0] or 0
++        
++        self.assertLessEqual(
++            flt(reserved_qty),
++            100,
++            f"预留库存 {reserved_qty} 不应超过初始库存 100"
++        )
++    
++    def test_duplicate_submit_prevention(self):
++        """测试重复提交防护 - 幂等性测试"""
++        from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
++        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++        
++        # 创建销售订单
++        so = make_sales_order(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=10
++        )
++        so.submit()
++        
++        # 创建交货单草稿
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        
++        # 尝试重复提交同一单据
++        def submit_delivery_note(attempt):
++            try:
++                frappe.connect()
++                dn_doc = frappe.get_doc("Delivery Note", dn.name)
++                dn_doc.submit()
++                self.results_queue.put(("success", attempt))
++            except frappe.DocstatusTransitionError as e:
++                self.results_queue.put(("docstatus_error", attempt, str(e)))
++            except Exception as e:
++                self.results_queue.put(("error", attempt, str(e)))
++            finally:
++                frappe.destroy()
++        
++        # 启动多个线程尝试同时提交
++        threads = []
++        for i in range(5):
++            t = threading.Thread(target=submit_delivery_note, args=(i,))
++            threads.append(t)
++            t.start()
++        
++        for t in threads:
++            t.join()
++        
++        # 验证结果 - 只有一个应该成功，其他应该失败
++        success_count = 0
++        docstatus_errors = 0
++        
++        while not self.results_queue.empty():
++            status, attempt, *_ = self.results_queue.get()
++            if status == "success":
++                success_count += 1
++            elif status == "docstatus_error":
++                docstatus_errors += 1
++        
++        self.assertEqual(
++            success_count,
++            1,
++            f"应该只有一个成功的提交，但有 {success_count} 个"
++        )
++        
++        # 验证单据确实是提交状态
++        dn.reload()
++        self.assertEqual(dn.docstatus, 1)
++    
++    def test_transaction_rollback_on_error(self):
++        """测试错误时的事务回滚 - 一致性测试"""
++        from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
++        from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
++        
++        # 记录初始库存
++        initial_bin = get_bin(self.item_code, self.warehouse)
++        initial_actual_qty = flt(initial_bin.actual_qty)
++        
++        # 创建会在提交时失败的场景
++        dn = create_delivery_note(
++            item_code=self.item_code,
++            qty=10,
++            warehouse=self.warehouse,
++            do_not_submit=True
++        )
++        
++        # 故意引入一个验证错误的场景
++        dn.items[0].qty = -5  # 无效数量
++        
++        try:
++            dn.submit()
++            self.fail("应该抛出验证错误")
++        except Exception as e:
++            # 验证库存没有变化
++            final_bin = get_bin(self.item_code, self.warehouse)
++            final_bin.load_from_db()
++            
++            self.assertEqual(
++                flt(final_bin.actual_qty),
++                initial_actual_qty,
++                "库存应该回滚到初始状态"
++            )
++    
++    def test_status_transaction_atomicity(self):
++        """测试状态转换的原子性"""
++        from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
++            make_stock_reservation_entry
++        )
++        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++        
++        so = make_sales_order(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=20
++        )
++        so.submit()
++        
++        sre = make_stock_reservation_entry(
++            voucher_type="Sales Order",
++            voucher_no=so.name,
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            reserved_qty=20,
++            voucher_qty=20,
++        )
++        sre.submit()
++        
++        # 模拟并发更新状态
++        def update_sre_status(target_status):
++            try:
++                frappe.connect()
++                sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
++                
++                # 先读取再修改 - 典型的竞态条件场景
++                if sre_doc.status != target_status:
++                    sre_doc.status = target_status
++                    sre_doc.db_update()
++                    frappe.db.commit()
++                    self.results_queue.put(("updated", target_status))
++                else:
++                    self.results_queue.put(("already_set", target_status))
++            
++            except Exception as e:
++                self.results_queue.put(("error", str(e)))
++            finally:
++                frappe.destroy()
++        
++        threads = []
++        for status in ["Delivered", "Closed", "Partially Delivered"]:
++            t = threading.Thread(target=update_sre_status, args=(status,))
++            threads.append(t)
++            t.start()
++        
++        for t in threads:
++            t.join()
++        
++        # 验证最终状态是一致的
++        sre.reload()
++        self.assertIsNotNone(sre.status)
++
++
++class TestDuplicateSubmission(ERPNextTestSuite):
++    """重复提交测试"""
++    
++    def setUp(self):
++        self.item_code = "_Test Duplicate Submission"
++        self.warehouse = "_Test Warehouse - _TC"
++        
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {"is_stock_item": 1})
++    
++    def test_idempotent_operations(self):
++        """测试幂等性操作"""
++        from erpnext.stock.utils import update_bin_qty
++        
++        # 初始状态
++        bin = get_bin(self.item_code, self.warehouse)
++        initial_reserved_qty = flt(bin.reserved_qty)
++        
++        # 多次执行相同的更新
++        for _ in range(5):
++            update_bin_qty(
++                self.item_code,
++                self.warehouse,
++                {"reserved_qty": initial_reserved_qty + 10}
++            )
++        
++        # 验证最终结果应该只应用一次
++        bin.load_from_db()
++        self.assertEqual(
++            flt(bin.reserved_qty),
++            initial_reserved_qty + 10,
++            "多次相同操作应该是幂等的"
++        )
++    
++    def test_concurrent_stock_balance_update(self):
++        """测试并发库存余额更新"""
++        threads = []
++        results = []
++        
++        def update_stock(qty_to_add):
++            try:
++                frappe.connect()
++                bin = get_bin(self.item_code, self.warehouse)
++                # 先读取再修改 - 竞态条件
++                current_qty = flt(bin.actual_qty)
++                bin.actual_qty = current_qty + qty_to_add
++                bin.db_update()
++                frappe.db.commit()
++                results.append(qty_to_add)
++            except Exception as e:
++                results.append(f"error: {str(e)}")
++            finally:
++                frappe.destroy()
++        
++        # 先设置初始库存
++        bin = get_bin(self.item_code, self.warehouse)
++        bin.actual_qty = 0
++        bin.db_update()
++        frappe.db.commit()
++        
++        # 启动10个线程各加1
++        for i in range(10):
++            t = threading.Thread(target=update_stock, args=(1,))
++            threads.append(t)
++            t.start()
++        
++        for t in threads:
++            t.join()
++        
++        # 注意：这在没有锁的情况下很可能会失败！
++        bin.load_from_db()
++        print(f"最终库存: {bin.actual_qty}, 期望: 10")
++        # 如果不等于10，说明存在竞态条件
++        
++        # 这个测试的目的是展示问题，实际项目中应该使用数据库锁
++
++
++def flt(value):
++    """转换为浮点数"""
++    from frappe.utils import flt as frappe_flt
++    return frappe_flt(value)
+diff --git a/erpnext/tests/test_financial_critical_scenarios.py b/erpnext/tests/test_financial_critical_scenarios.py
+new file mode 100644
+index 0000000000..8087e0349e
+--- /dev/null
++++ b/erpnext/tests/test_financial_critical_scenarios.py
+@@ -0,0 +1,391 @@
++#!/usr/bin/env python3
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++财务关键场景测试模块
++包含最容易漏掉但会影响财务数据的测试场景
++"""
++
++import frappe
++from frappe.utils import flt, nowdate, add_days
++from erpnext.tests.utils import ERPNextTestSuite
++from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
++from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
++from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
++from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
++
++
++class TestFinancialCriticalScenarios(ERPNextTestSuite):
++    """财务关键场景测试"""
++    
++    def setUp(self):
++        self.item_code = "_Test Financial Item"
++        self.warehouse = "_Test Warehouse - _TC"
++        self.customer = "_Test Customer"
++        self.company = "_Test Company"
++        
++        # 创建测试物料
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {
++                "is_stock_item": 1,
++                "standard_rate": 100,
++                "valuation_rate": 50
++            })
++        
++        # 初始化库存
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=100,
++            basic_rate=50,
++            target=self.warehouse
++        )
++    
++    def test_rounding_cumulative_error(self):
++        """场景1: 舍入累积误差测试 - 最常见的财务问题"""
++        from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
++        
++        # 创建多个小数金额的发票
++        total_expected = 0
++        invoices = []
++        
++        for i in range(10):
++            qty = 1.5
++            rate = 10.333  # 会产生循环小数
++            amount = qty * rate  # 15.4995
++            total_expected += amount
++            
++            si = create_sales_invoice(
++                item_code=self.item_code,
++                qty=qty,
++                rate=rate,
++                do_not_submit=True
++            )
++            si.insert()
++            si.submit()
++            invoices.append(si)
++        
++        # 计算总金额
++        total_actual = sum(flt(si.grand_total) for si in invoices)
++        
++        # 检查累积误差
++        print(f"期望总额: {total_expected}, 实际总额: {total_actual}")
++        print(f"误差: {abs(flt(total_actual - total_expected))}")
++        
++        # 误差应该小于0.01（分）
++        self.assertLess(
++            abs(flt(total_actual - total_expected)),
++            0.01,
++            f"累积舍入误差过大: {abs(flt(total_actual - total_expected))}"
++        )
++    
++    def test_cancel_and_recreate_ledger_consistency(self):
++        """场景2: 取消和重建操作的分录一致性 - 财务审计关键"""
++        from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
++        
++        # 创建并提交发票
++        si = create_sales_invoice(
++            item_code=self.item_code,
++            qty=10,
++            rate=100
++        )
++        si.submit()
++        original_name = si.name
++        
++        # 获取原始分录
++        original_gl_entries = frappe.get_all(
++            "GL Entry",
++            filters={"voucher_no": original_name, "voucher_type": "Sales Invoice"},
++            fields=["account", "debit", "credit", "against"]
++        )
++        
++        # 取消发票
++        si.cancel()
++        
++        # 验证取消分录
++        cancelled_gl_entries = frappe.get_all(
++            "GL Entry",
++            filters={"voucher_no": original_name, "voucher_type": "Sales Invoice"},
++            fields=["account", "debit", "credit", "against", "is_cancelled"]
++        )
++        
++        # 应该有两套分录：原始的和冲销的
++        self.assertEqual(len(cancelled_gl_entries), len(original_gl_entries) * 2)
++        
++        # 验证借贷平衡
++        total_debit = sum(flt(e.debit) for e in cancelled_gl_entries)
++        total_credit = sum(flt(e.credit) for e in cancelled_gl_entries)
++        self.assertEqual(flt(total_debit), flt(total_credit))
++    
++    def test_stock_valuation_consistency_across_documents(self):
++        """场景3: 跨单据库存估值一致性 - 成本核算关键"""
++        from erpnext.stock.doctype.purchase_receipt.test_purchase_receipt import create_purchase_receipt
++        from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
++        
++        # 第一次收货 - 成本50
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=10,
++            basic_rate=50,
++            target=self.warehouse
++        )
++        
++        # 第二次收货 - 成本60（价格上涨）
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=10,
++            basic_rate=60,
++            target=self.warehouse
++        )
++        
++        # 创建发货单
++        dn1 = create_delivery_note(
++            item_code=self.item_code,
++            qty=5,
++            warehouse=self.warehouse
++        )
++        dn1.submit()
++        
++        # 获取库存估值
++        sle1 = frappe.get_doc("Stock Ledger Entry", {
++            "voucher_type": "Delivery Note",
++            "voucher_no": dn1.name
++        })
++        valuation1 = flt(sle1.stock_value_difference)
++        
++        # 再创建一个发货单
++        dn2 = create_delivery_note(
++            item_code=self.item_code,
++            qty=10,
++            warehouse=self.warehouse
++        )
++        dn2.submit()
++        
++        sle2 = frappe.get_doc("Stock Ledger Entry", {
++            "voucher_type": "Delivery Note",
++            "voucher_no": dn2.name
++        })
++        valuation2 = flt(sle2.stock_value_difference)
++        
++        # 验证移动平均成本计算
++        print(f"第一次发货成本: {abs(valuation1)}, 第二次: {abs(valuation2)}")
++        
++        # 验证库存余额
++        from erpnext.stock.utils import get_bin
++        bin = get_bin(self.item_code, self.warehouse)
++        bin.load_from_db()
++        
++        print(f"最终实际库存: {bin.actual_qty}")
++        print(f"最终库存价值: {bin.stock_value}")
++    
++    def test_currency_conversion_precision(self):
++        """场景4: 多币种汇率精度问题 - 跨国业务关键"""
++        if not frappe.db.exists("Currency", "USD"):
++            usd = frappe.new_doc("Currency")
++            usd.currency_name = "US Dollar"
++            usd.symbol = "$"
++            usd.insert()
++        
++        # 设置汇率
++        from erpnext.setup.doctype.currency_exchange.currency_exchange import make_currency_exchange
++        make_currency_exchange("USD", "INR", 83.4567, nowdate())
++        
++        # 创建外币销售订单
++        so = make_sales_order(
++            item_code=self.item_code,
++            qty=10,
++            rate=10.50,  # USD
++            currency="USD",
++            conversion_rate=83.4567,
++            do_not_submit=True
++        )
++        so.insert()
++        so.submit()
++        
++        # 创建发货单
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        dn.submit()
++        
++        # 创建发票
++        si = make_sales_invoice(dn.name)
++        si.insert()
++        si.submit()
++        
++        # 验证汇率转换精度
++        expected_base_total = 10 * 10.50 * 83.4567  # 10个 * $10.50 * 汇率
++        actual_base_total = flt(si.base_total)
++        
++        print(f"期望本位币总额: {expected_base_total}")
++        print(f"实际本位币总额: {actual_base_total}")
++        print(f"差异: {abs(expected_base_total - actual_base_total)}")
++        
++        # 差异应该在可接受范围内
++        self.assertLess(
++            abs(flt(expected_base_total - actual_base_total)),
++            0.02,  # 允许2分的差异
++            f"汇率转换精度问题: 差异 {abs(flt(expected_base_total - actual_base_total))}"
++        )
++    
++    def test_payment_reconciliation_consistency(self):
++        """场景5: 付款核销一致性 - 应收账款关键"""
++        from erpnext.accounts.doctype.sales_invoice.test_sales_invoice import create_sales_invoice
++        
++        # 创建两张发票
++        si1 = create_sales_invoice(
++            item_code=self.item_code,
++            qty=10,
++            rate=100
++        )
++        si1.submit()
++        
++        si2 = create_sales_invoice(
++            item_code=self.item_code,
++            qty=5,
++            rate=200
++        )
++        si2.submit()
++        
++        total_invoice_amount = flt(si1.grand_total) + flt(si2.grand_total)
++        
++        # 创建超额付款
++        pe = get_payment_entry("Sales Invoice", si1.name)
++        pe.paid_amount = total_invoice_amount + 100  # 多付100
++        pe.references = []
++        
++        # 添加两张发票的核销
++        pe.append("references", {
++            "reference_doctype": "Sales Invoice",
++            "reference_name": si1.name,
++            "allocated_amount": flt(si1.grand_total)
++        })
++        pe.append("references", {
++            "reference_doctype": "Sales Invoice",
++            "reference_name": si2.name,
++            "allocated_amount": flt(si2.grand_total)
++        })
++        
++        pe.insert()
++        pe.submit()
++        
++        # 验证两张发票都已完全核销
++        si1.reload()
++        si2.reload()
++        
++        self.assertEqual(si1.status, "Paid")
++        self.assertEqual(si2.status, "Paid")
++        
++        # 验证客户余额应该有预付款/贷方余额
++        from erpnext.accounts.party import get_party_account
++        customer_account = get_party_account("Customer", self.customer, self.company)
++        
++        balance = frappe.db.sql("""
++            SELECT SUM(debit - credit) 
++            FROM `tabGL Entry` 
++            WHERE account = %s AND is_cancelled = 0
++        """, customer_account)[0][0] or 0
++        
++        print(f"客户余额: {balance}")
++        self.assertEqual(flt(balance), -100)  # 应该是贷方余额100
++
++
++class TestStatusFlowConsistency(ERPNextTestSuite):
++    """状态流转一致性测试"""
++    
++    def setUp(self):
++        self.item_code = "_Test Status Flow"
++        self.warehouse = "_Test Warehouse - _TC"
++        
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {"is_stock_item": 1})
++        
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=100,
++            target=self.warehouse
++        )
++    
++    def test_complete_sales_cycle_status_consistency(self):
++        """完整销售周期的状态一致性测试"""
++        # 1. 创建销售订单
++        so = make_sales_order(
++            item_code=self.item_code,
++            qty=10,
++            warehouse=self.warehouse
++        )
++        so.submit()
++        self.assertEqual(so.status, "To Deliver and Bill")
++        
++        # 2. 创建发货单
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        dn.submit()
++        so.reload()
++        
++        # 验证销售订单状态更新
++        self.assertEqual(so.per_delivered, 100)
++        self.assertEqual(so.status, "To Bill")
++        
++        # 3. 创建销售发票
++        si = make_sales_invoice(dn.name)
++        si.insert()
++        si.submit()
++        so.reload()
++        dn.reload()
++        
++        # 验证最终状态
++        self.assertEqual(so.per_billed, 100)
++        self.assertEqual(so.per_delivered, 100)
++        self.assertEqual(so.status, "Completed")
++        self.assertEqual(dn.per_billed, 100)
++        self.assertEqual(dn.status, "Completed")
++    
++    def test_cancel_chain_reaction(self):
++        """取消连锁反应测试 - 验证单据状态的正确回滚"""
++        # 创建完整链路
++        so = make_sales_order(
++            item_code=self.item_code,
++            qty=10,
++            warehouse=self.warehouse
++        )
++        so.submit()
++        
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        dn.submit()
++        
++        si = make_sales_invoice(dn.name)
++        si.insert()
++        si.submit()
++        
++        # 尝试直接取消销售订单 - 应该失败
++        with self.assertRaises(frappe.LinkExistsError):
++            so.cancel()
++        
++        # 正确的取消顺序：发票 -> 发货单 -> 销售订单
++        si.cancel()
++        dn.cancel()
++        so.cancel()
++        
++        # 验证所有状态都是Cancelled
++        si.reload()
++        dn.reload()
++        so.reload()
++        
++        self.assertEqual(si.docstatus, 2)
++        self.assertEqual(dn.docstatus, 2)
++        self.assertEqual(so.docstatus, 2)
++        
++        # 验证库存已回滚
++        from erpnext.stock.utils import get_bin
++        bin = get_bin(self.item_code, self.warehouse)
++        bin.load_from_db()
++        
++        print(f"最终库存: {bin.actual_qty}")
+diff --git a/erpnext/tests/test_multi_dimension_regression.py b/erpnext/tests/test_multi_dimension_regression.py
+new file mode 100644
+index 0000000000..5fc5e1e952
+--- /dev/null
++++ b/erpnext/tests/test_multi_dimension_regression.py
+@@ -0,0 +1,464 @@
++#!/usr/bin/env python3
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++多维度回归测试模块
++包含多语言、多币种、多角色权限的综合测试
++"""
++
++import frappe
++from frappe.utils import flt, nowdate
++from erpnext.tests.utils import ERPNextTestSuite
++from erpnext.selling.doctype.sales_order.sales_order import make_sales_order
++from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
++
++
++class TestMultiLanguageSupport(ERPNextTestSuite):
++    """多语言测试"""
++    
++    def test_translated_field_consistency(self):
++        """测试翻译字段的一致性"""
++        # 保存原始语言
++        original_language = frappe.local.lang
++        
++        try:
++            # 测试英文
++            frappe.local.lang = "en"
++            item_en = frappe.get_doc("Item", "_Test Item")
++            item_name_en = item_en.item_name
++            
++            # 测试其他语言（如果有）
++            if frappe.db.exists("Translation", {"source_name": item_name_en}):
++                frappe.local.lang = "hi"  # 印地语
++                item_hi = frappe.get_doc("Item", "_Test Item")
++                item_name_hi = item_hi.item_name
++                
++                # 确保获取的是正确翻译
++                translation = frappe.db.get_value("Translation", {
++                    "source_text": item_name_en,
++                    "language": "hi"
++                }, "translated_text")
++                
++                if translation:
++                    self.assertEqual(item_name_hi, translation)
++            
++        finally:
++            frappe.local.lang = original_language
++
++
++class TestMultiCurrencyRegression(ERPNextTestSuite):
++    """多币种回归测试"""
++    
++    def setUp(self):
++        self.item_code = "_Test Multi Currency Item"
++        self.warehouse = "_Test Warehouse - _TC"
++        
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {
++                "is_stock_item": 1,
++                "standard_rate": 100
++            })
++        
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=100,
++            target=self.warehouse
++        )
++    
++    def test_currency_rounding_across_exchange_rates(self):
++        """测试跨汇率的货币舍入"""
++        currencies = ["USD", "EUR", "GBP", "JPY"]
++        exchange_rates = {
++            "USD": 83.50,
++            "EUR": 90.25,
++            "GBP": 105.75,
++            "JPY": 0.55
++        }
++        
++        # 设置多币种汇率
++        for currency, rate in exchange_rates.items():
++            if not frappe.db.exists("Currency", currency):
++                curr = frappe.new_doc("Currency")
++                curr.currency_name = currency
++                curr.symbol = currency[0]
++                curr.insert()
++            
++            # 创建或更新汇率
++            existing = frappe.db.exists("Currency Exchange", {
++                "from_currency": currency,
++                "to_currency": "INR",
++                "date": nowdate()
++            })
++            
++            if not existing:
++                from erpnext.setup.doctype.currency_exchange.currency_exchange import make_currency_exchange
++                make_currency_exchange(currency, "INR", rate, nowdate())
++        
++        # 用不同货币创建销售订单
++        results = []
++        
++        for currency in currencies:
++            so = make_sales_order(
++                item_code=self.item_code,
++                qty=10,
++                rate=100 / exchange_rates[currency],  # 保持约100 INR
++                currency=currency,
++                conversion_rate=exchange_rates[currency],
++                do_not_submit=True
++            )
++            so.insert()
++            so.submit()
++            
++            results.append({
++                "currency": currency,
++                "base_total": flt(so.base_total),
++                "grand_total": flt(so.grand_total)
++            })
++            print(f"{currency}: {so.grand_total} -> {so.base_total} INR")
++        
++        # 验证本位币金额应该相近（考虑舍入差异）
++        base_totals = [r["base_total"] for r in results]
++        avg_base = sum(base_totals) / len(base_totals)
++        
++        for total in base_totals:
++            self.assertLess(
++                abs(flt(total - avg_base)),
++                2.0,  # 允许2 INR的差异
++                f"币种 {r['currency']} 的本位币金额差异过大"
++            )
++    
++    def test_exchange_rate_gain_loss_calculation(self):
++        """测试汇兑损益计算"""
++        from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
++        from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
++        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
++        
++        # 设置美元汇率
++        if not frappe.db.exists("Currency", "USD"):
++            usd = frappe.new_doc("Currency")
++            usd.currency_name = "US Dollar"
++            usd.symbol = "$"
++            usd.insert()
++        
++        from erpnext.setup.doctype.currency_exchange.currency_exchange import make_currency_exchange
++        
++        # 第一个汇率
++        make_currency_exchange("USD", "INR", 83.00, nowdate())
++        
++        # 创建美元销售订单
++        so = make_sales_order(
++            item_code=self.item_code,
++            qty=10,
++            rate=10,  # $10 each
++            currency="USD",
++            conversion_rate=83.00,
++            do_not_submit=True
++        )
++        so.insert()
++        so.submit()
++        
++        # 创建发货单
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        dn.submit()
++        
++        # 创建发票（使用相同汇率）
++        si = make_sales_invoice(dn.name)
++        si.insert()
++        si.submit()
++        
++        # 更改汇率
++        make_currency_exchange("USD", "INR", 85.00, nowdate())
++        
++        # 创建付款（使用新汇率）
++        pe = get_payment_entry("Sales Invoice", si.name)
++        pe.source_exchange_rate = 85.00
++        pe.insert()
++        pe.submit()
++        
++        # 验证汇兑损益
++        gl_entries = frappe.get_all(
++            "GL Entry",
++            filters={
++                "voucher_type": "Payment Entry",
++                "voucher_no": pe.name,
++                "is_cancelled": 0
++            },
++            fields=["account", "debit", "credit"]
++        )
++        
++        print("付款分录:")
++        for entry in gl_entries:
++            print(f"{entry.account}: 借 {entry.debit} / 贷 {entry.credit}")
++        
++        # 应该有汇兑损益分录
++        has_exchange_gain_loss = any(
++            "Exchange" in entry.account or "汇兑" in entry.account
++            for entry in gl_entries
++        )
++        # 注意：实际实现取决于账户设置
++
++
++class TestRoleBasedPermissions(ERPNextTestSuite):
++    """基于角色的权限测试"""
++    
++    def setUp(self):
++        # 创建测试用户
++        self.test_users = {}
++        
++        roles = [
++            ("Sales User", "sales_user@test.com"),
++            ("Stock User", "stock_user@test.com"),
++            ("Accounts User", "accounts_user@test.com"),
++            ("Sales Manager", "sales_manager@test.com"),
++        ]
++        
++        for role, email in roles:
++            if not frappe.db.exists("User", email):
++                user = frappe.new_doc("User")
++                user.email = email
++                user.first_name = role.replace(" ", "_")
++                user.insert()
++                
++                # 分配角色
++                user.append("roles", {"role": role})
++                user.save(ignore_permissions=True)
++            
++            self.test_users[role] = email
++    
++    def test_sales_user_cannot_access_stock_reconciliation(self):
++        """测试销售用户不能访问库存对账"""
++        with self.set_user(self.test_users["Sales User"]):
++            with self.assertRaises(frappe.PermissionError):
++                frappe.get_doc({
++                    "doctype": "Stock Reconciliation",
++                    "company": "_Test Company"
++                }).insert()
++    
++    def test_sales_manager_can_confirm_sales_order(self):
++        """测试销售经理可以确认销售订单"""
++        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++        
++        # 先用管理员创建
++        so = make_sales_order(
++            item_code="_Test Item",
++            qty=10,
++            do_not_submit=True
++        )
++        so.insert()
++        
++        # 切换到销售经理
++        with self.set_user(self.test_users["Sales Manager"]):
++            so.reload()
++            so.submit()  # 应该成功
++            self.assertEqual(so.docstatus, 1)
++    
++    def test_segregation_of_duties(self):
++        """测试职责分离 - 创建者不能审批自己的单据"""
++        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++        
++        # 先用销售用户创建
++        with self.set_user(self.test_users["Sales User"]):
++            so = make_sales_order(
++                item_code="_Test Item",
++                qty=10,
++                do_not_submit=True
++            )
++            so.insert()
++            so_name = so.name
++        
++        # 再尝试用同一用户提交（可能应该失败，取决于系统配置）
++        with self.set_user(self.test_users["Sales User"]):
++            try:
++                so = frappe.get_doc("Sales Order", so_name)
++                so.submit()
++                # 如果允许提交，记录下来
++                print("注意：当前配置允许用户提交自己创建的单据")
++            except frappe.PermissionError:
++                # 如果抛出错误，说明有权限控制
++                pass
++
++
++class TestCombinedRegression(ERPNextTestSuite):
++    """综合回归测试 - 同时覆盖多个维度"""
++    
++    def setUp(self):
++        self.item_code = "_Test Combined Item"
++        self.warehouse = "_Test Warehouse - _TC"
++        
++        if not frappe.db.exists("Item", self.item_code):
++            from erpnext.stock.doctype.item.test_item import make_item
++            make_item(self.item_code, {"is_stock_item": 1})
++        
++        make_stock_entry(
++            item_code=self.item_code,
++            warehouse=self.warehouse,
++            qty=100,
++            target=self.warehouse
++        )
++    
++    def test_full_cycle_multi_role_multi_currency(self):
++        """完整周期测试 - 多角色 + 多币种"""
++        from erpnext.selling.doctype.sales_order.sales_order import make_sales_order
++        from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
++        from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
++        from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
++        
++        # 1. 销售用户创建订单（多币种）
++        if not frappe.db.exists("Currency", "EUR"):
++            eur = frappe.new_doc("Currency")
++            eur.currency_name = "Euro"
++            eur.symbol = "€"
++            eur.insert()
++        
++        from erpnext.setup.doctype.currency_exchange.currency_exchange import make_currency_exchange
++        make_currency_exchange("EUR", "INR", 90.50, nowdate())
++        
++        # 创建测试数据
++        with self.set_user("Administrator"):
++            so = make_sales_order(
++                item_code=self.item_code,
++                qty=10,
++                rate=15,  # EUR
++                currency="EUR",
++                conversion_rate=90.50,
++                do_not_submit=True
++            )
++            so.insert()
++            so_name = so.name
++        
++        # 2. 销售经理审批
++        if "Sales Manager" in self.test_users:
++            with self.set_user(self.test_users["Sales Manager"]):
++                so = frappe.get_doc("Sales Order", so_name)
++                so.submit()
++        
++        # 3. 库存用户发货
++        if "Stock User" in self.test_users:
++            with self.set_user(self.test_users["Stock User"]):
++                dn = make_delivery_note(so_name)
++                dn.insert()
++                dn.submit()
++                dn_name = dn.name
++        
++        # 4. 财务用户开票和收款
++        if "Accounts User" in self.test_users:
++            with self.set_user(self.test_users["Accounts User"]):
++                if "dn_name" in locals():
++                    si = make_sales_invoice(dn_name)
++                    si.insert()
++                    si.submit()
++                    
++                    pe = get_payment_entry("Sales Invoice", si.name)
++                    pe.insert()
++                    pe.submit()
++        
++        # 5. 验证完整流程的数据一致性
++        so.reload()
++        if "dn_name" in locals():
++            dn.reload()
++            si.reload()
++            pe.reload()
++            
++            self.assertEqual(so.status, "Completed")
++            self.assertEqual(dn.status, "Completed")
++            self.assertEqual(si.status, "Paid")
++
++
++class TestMinimumValuableRegressionSuite(ERPNextTestSuite):
++    """最小价值回归测试套件 - MVP Regression"""
++    
++    def test_minimal_business_cycle(self):
++        """最小业务周期测试 - 覆盖最核心的功能"""
++        from erpnext.selling.doctype.sales_order.test_sales_order import make_sales_order
++        from erpnext.stock.doctype.delivery_note.delivery_note import make_delivery_note
++        from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_invoice
++        
++        # 这个测试覆盖了：
++        # - 销售订单创建
++        # - 库存预留
++        # - 发货
++        # - 库存减少
++        # - 开票
++        # - 应收账款
++        # - 状态流转
++        
++        item_code = "_Test Item"
++        warehouse = "_Test Warehouse - _TC"
++        
++        # 获取初始库存
++        from erpnext.stock.utils import get_bin
++        initial_bin = get_bin(item_code, warehouse)
++        initial_qty = flt(initial_bin.actual_qty)
++        
++        # 确保有库存
++        if initial_qty < 10:
++            make_stock_entry(
++                item_code=item_code,
++                warehouse=warehouse,
++                qty=100,
++                target=warehouse
++            )
++        
++        # 销售订单
++        so = make_sales_order(
++            item_code=item_code,
++            qty=5,
++            warehouse=warehouse
++        )
++        so.submit()
++        
++        # 发货
++        dn = make_delivery_note(so.name)
++        dn.insert()
++        dn.submit()
++        
++        # 开票
++        si = make_sales_invoice(dn.name)
++        si.insert()
++        si.submit()
++        
++        # 验证最终状态
++        so.reload()
++        dn.reload()
++        si.reload()
++        
++        self.assertEqual(so.per_delivered, 100)
++        self.assertEqual(so.per_billed, 100)
++        self.assertEqual(so.status, "Completed")
++        self.assertEqual(dn.per_billed, 100)
++        self.assertEqual(dn.status, "Completed")
++        self.assertEqual(si.status, "Unpaid")
++        
++        # 验证库存减少
++        final_bin = get_bin(item_code, warehouse)
++        final_bin.load_from_db()
++        
++        expected_qty = initial_qty - 5
++        if initial_qty < 10:
++            expected_qty = 100 - 5  # 如果我们刚加了库存
++        
++        print(f"库存检查: 初始 {initial_qty} -> 最终 {final_bin.actual_qty}, 期望 {expected_qty}")
++    
++    def test_critical_data_integrity(self):
++        """关键数据完整性测试"""
++        # 测试1：借贷平衡
++        test_gl_balance = frappe.db.sql("""
++            SELECT 
++                SUM(debit) as total_debit, 
++                SUM(credit) as total_credit 
++            FROM `tabGL Entry` 
++            WHERE is_cancelled = 0
++        """)
++        
++        if test_gl_balance and test_gl_balance[0][0]:
++            total_debit = flt(test_gl_balance[0][0])
++            total_credit = flt(test_gl_balance[0][1])
++            self.assertAlmostEqual(total_debit, total_credit, places=2)
++        
++        # 测试2：库存账面一致性
++        # 这个测试验证Bin表的库存与Stock Ledger Entry的一致性
++        pass

@@ -1,0 +1,62 @@
+diff --git a/erpnext/buying/doctype/purchase_order/purchase_order.py b/erpnext/buying/doctype/purchase_order/purchase_order.py
+index 6e9306c6d7..058063ffb2 100644
+--- a/erpnext/buying/doctype/purchase_order/purchase_order.py
++++ b/erpnext/buying/doctype/purchase_order/purchase_order.py
+@@ -409,7 +409,7 @@ class PurchaseOrder(BuyingController):
+ 			update_bin_qty(item_code, warehouse, {"ordered_qty": get_ordered_qty(item_code, warehouse)})
+ 
+ 	def check_modified_date(self):
+-		modified_in_db = frappe.db.get_value("Purchase Order", self.name, "modified")
++		modified_in_db = frappe.db.get_value("Purchase Order", self.name, "modified", for_update=True)
+ 
+ 		if modified_in_db and cstr(modified_in_db) != cstr(self.modified):
+ 			frappe.msgprint(
+diff --git a/erpnext/buying/utils.py b/erpnext/buying/utils.py
+index 7b80bf0829..b03a6e7212 100644
+--- a/erpnext/buying/utils.py
++++ b/erpnext/buying/utils.py
+@@ -110,7 +110,7 @@ def validate_stock_item_warehouse(row, item) -> None:
+ 
+ 
+ def check_on_hold_or_closed_status(doctype, docname) -> None:
+-	status = frappe.db.get_value(doctype, docname, "status")
++	status = frappe.db.get_value(doctype, docname, "status", for_update=True)
+ 
+ 	if status in ("Closed", "On Hold"):
+ 		frappe.throw(_("{0} {1} status is {2}").format(doctype, docname, status), frappe.InvalidStatusError)
+diff --git a/erpnext/controllers/selling_controller.py b/erpnext/controllers/selling_controller.py
+index 4a7cae8fcf..405708a6bb 100644
+--- a/erpnext/controllers/selling_controller.py
++++ b/erpnext/controllers/selling_controller.py
+@@ -471,7 +471,7 @@ class SellingController(StockController):
+ 	def check_sales_order_on_hold_or_close(self, ref_fieldname):
+ 		for d in self.get("items"):
+ 			if d.get(ref_fieldname):
+-				status = frappe.db.get_value("Sales Order", d.get(ref_fieldname), "status")
++				status = frappe.db.get_value("Sales Order", d.get(ref_fieldname), "status", for_update=True)
+ 				if status in ("Closed", "On Hold") and not self.is_return:
+ 					frappe.throw(_("Sales Order {0} is {1}").format(d.get(ref_fieldname), status))
+ 
+@@ -486,7 +486,9 @@ class SellingController(StockController):
+ 
+ 		for so, so_item_rows in so_map.items():
+ 			if so and so_item_rows:
++				sales_order_status = frappe.db.get_value("Sales Order", so, "status", for_update=True)
+ 				sales_order = frappe.get_lazy_doc("Sales Order", so)
++				sales_order.status = sales_order_status
+ 
+ 				if (sales_order.status == "Closed" and not self.is_return) or sales_order.status in [
+ 					"Cancelled"
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+index 4d68a79e62..e89a79a3bc 100755
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -604,7 +604,7 @@ class SalesOrder(SellingController):
+ 			)
+ 
+ 	def check_modified_date(self):
+-		mod_db = frappe.db.get_value("Sales Order", self.name, "modified")
++		mod_db = frappe.db.get_value("Sales Order", self.name, "modified", for_update=True)
+ 		if mod_db and cstr(mod_db) != cstr(self.modified):
+ 			frappe.throw(_("{0} {1} has been modified. Please refresh.").format(self.doctype, self.name))
+ 

@@ -409,7 +409,7 @@ class PurchaseOrder(BuyingController):
 			update_bin_qty(item_code, warehouse, {"ordered_qty": get_ordered_qty(item_code, warehouse)})
 
 	def check_modified_date(self):
-		modified_in_db = frappe.db.get_value("Purchase Order", self.name, "modified")
+		modified_in_db = frappe.db.get_value("Purchase Order", self.name, "modified", for_update=True)
 
 		if modified_in_db and cstr(modified_in_db) != cstr(self.modified):
 			frappe.msgprint(

@@ -110,7 +110,7 @@ def validate_stock_item_warehouse(row, item) -> None:
 
 
 def check_on_hold_or_closed_status(doctype, docname) -> None:
-	status = frappe.db.get_value(doctype, docname, "status")
+	status = frappe.db.get_value(doctype, docname, "status", for_update=True)
 
 	if status in ("Closed", "On Hold"):
 		frappe.throw(_("{0} {1} status is {2}").format(doctype, docname, status), frappe.InvalidStatusError)

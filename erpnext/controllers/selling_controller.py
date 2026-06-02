@@ -471,7 +471,7 @@ class SellingController(StockController):
 	def check_sales_order_on_hold_or_close(self, ref_fieldname):
 		for d in self.get("items"):
 			if d.get(ref_fieldname):
-				status = frappe.db.get_value("Sales Order", d.get(ref_fieldname), "status")
+				status = frappe.db.get_value("Sales Order", d.get(ref_fieldname), "status", for_update=True)
 				if status in ("Closed", "On Hold") and not self.is_return:
 					frappe.throw(_("Sales Order {0} is {1}").format(d.get(ref_fieldname), status))
 
@@ -486,7 +486,9 @@ class SellingController(StockController):
 
 		for so, so_item_rows in so_map.items():
 			if so and so_item_rows:
+				sales_order_status = frappe.db.get_value("Sales Order", so, "status", for_update=True)
 				sales_order = frappe.get_lazy_doc("Sales Order", so)
+				sales_order.status = sales_order_status
 
 				if (sales_order.status == "Closed" and not self.is_return) or sales_order.status in [
 					"Cancelled"

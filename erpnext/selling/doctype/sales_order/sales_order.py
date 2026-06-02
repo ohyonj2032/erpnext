@@ -604,7 +604,7 @@ class SalesOrder(SellingController):
 			)
 
 	def check_modified_date(self):
-		mod_db = frappe.db.get_value("Sales Order", self.name, "modified")
+		mod_db = frappe.db.get_value("Sales Order", self.name, "modified", for_update=True)
 		if mod_db and cstr(mod_db) != cstr(self.modified):
 			frappe.throw(_("{0} {1} has been modified. Please refresh.").format(self.doctype, self.name))
 

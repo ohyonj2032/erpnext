@@ -1,0 +1,70 @@
+
+{
+    "description": "Initial test data for order and inventory concurrency tests",
+    "data": {
+        "companies": [
+            {
+                "doctype": "Company",
+                "company_name": "_Test Company",
+                "abbr": "_TC",
+                "default_currency": "USD",
+                "country": "United States"
+            }
+        ],
+        "warehouses": [
+            {
+                "doctype": "Warehouse",
+                "warehouse_name": "Test Warehouse",
+                "company": "_Test Company"
+            }
+        ],
+        "item_groups": [
+            {
+                "doctype": "Item Group",
+                "item_group_name": "Products",
+                "parent_item_group": "All Item Groups"
+            }
+        ],
+        "items": [
+            {
+                "doctype": "Item",
+                "item_code": "TEST-ITEM-001",
+                "item_name": "Test Item for Concurrency",
+                "item_group": "Products",
+                "stock_uom": "Nos",
+                "is_stock_item": 1,
+                "valuation_rate": 100.0
+            }
+        ],
+        "customers": [
+            {
+                "doctype": "Customer",
+                "customer_name": "_Test Customer",
+                "customer_type": "Individual",
+                "customer_group": "Individual",
+                "territory": "All Territories"
+            }
+        ],
+        "uoms": [
+            {
+                "doctype": "UOM",
+                "uom_name": "Nos",
+                "must_be_whole_number": 1
+            }
+        ]
+    },
+    "setup_steps": [
+        "Create Test Company",
+        "Create Test Warehouse",
+        "Create Item Group 'Products'",
+        "Create Test Item",
+        "Create Test Customer",
+        "Initialize Bin with stock"
+    ],
+    "bin_initialization": {
+        "item_code": "TEST-ITEM-001",
+        "warehouse": "Test Warehouse",
+        "actual_qty": 100.0,
+        "valuation_rate": 100.0
+    }
+}

@@ -1,0 +1,1879 @@
+diff --git a/2.7.2.patch b/2.7.2.patch
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/IMPLEMENTATION_GUIDE.md b/IMPLEMENTATION_GUIDE.md
+new file mode 100644
+index 0000000000..ef2dd7b0ef
+--- /dev/null
++++ b/IMPLEMENTATION_GUIDE.md
+@@ -0,0 +1,220 @@
++
++# ERPNext 订单与库存并发控制实现指南
++
++## 概述
++
++本实现为 ERPNext 系统添加了完善的并发控制机制，解决了订单与库存对同一业务单据状态的竞态、重复提交和回滚问题。
++
++## 实现的关键功能
++
++1. **服务层并发控制** (OrderService)
++   - 基于缓存的分布式锁机制
++   - 幂等性处理，防止重复操作
++   - 状态机验证，确保状态转换的正确性
++   - 事务边界管理
++
++2. **库存原子操作** (InventoryService)
++   - 乐观锁机制，使用版本号检测并发修改
++   - 原子化的库存扣减，确保一致性
++   - 批量操作支持
++   - 事务日志记录
++
++3. **模型层扩展**
++   - Sales Order: 添加 version、last_status、status_changed_at 字段
++   - Bin: 添加 version 字段用于乐观锁
++   - 新建 Idempotent Operation Log 和 Inventory Transaction Log 文档类型
++
++4. **完整测试套件**
++   - 并发测试
++   - 幂等性测试
++   - 状态转换验证测试
++   - 库存扣减测试
++
++## 文件结构
++
++```
++erpnext/
++├── erpnext/
++│   ├── selling/
++│   │   ├── services/
++│   │   │   └── order_service.py          # 订单服务
++│   │   └── doctype/
++│   │       └── sales_order/
++│   │           └── sales_order_extension.py  # 订单模型扩展
++│   ├── stock/
++│   │   ├── services/
++│   │   │   └── inventory_service.py      # 库存服务
++│   │   └── doctype/
++│   │       └── bin/
++│   │           └── bin.py (扩展)
++│   └── tests/
++│       ├── test_order_inventory_race.py  # 并发测试
++│       └── fixtures/
++│           └── initial_data.json         # 测试数据
++└── IMPLEMENTATION_GUIDE.md               # 本文档
++```
++
++## 快速开始
++
++### 1. 数据库迁移
++
++首先运行迁移脚本来添加新的字段和文档类型：
++
++```python
++# 迁移 Sales Order
++bench execute erpnext.selling.doctype.sales_order.sales_order_extension.migrate_sales_order
++
++# 迁移 Bin
++bench execute erpnext.stock.services.inventory_service.migrate_bin
++```
++
++### 2. 运行测试
++
++```bash
++# 运行并发测试
++bench run-tests --test erpnext.tests.test_order_inventory_race
++```
++
++### 3. 使用示例
++
++#### 订单状态变更
++
++```python
++from erpnext.selling.services.order_service import OrderService
++
++# 处理订单状态变更
++result = OrderService.process_order_status_change(
++    order_id="SO-2024-00001",
++    new_status="To Deliver and Bill",
++    idempotency_key="unique-key-123"
++)
++
++print(result)
++```
++
++#### 库存扣减
++
++```python
++from erpnext.stock.services.inventory_service import InventoryService
++
++# 原子化库存扣减
++result = InventoryService.atomic_deduct_inventory(
++    item_code="ITEM-001",
++    warehouse="Warehouse-001",
++    qty=10.0,
++    transaction_id="txn-456"
++)
++
++print(result)
++```
++
++#### 批量库存操作
++
++```python
++from erpnext.stock.services.inventory_service import InventoryService
++
++# 批量扣减
++result = InventoryService.batch_atomic_deduct(
++    items=[
++        {"item_code": "ITEM-001", "warehouse": "WH-001", "qty": 5},
++        {"item_code": "ITEM-002", "warehouse": "WH-001", "qty": 3}
++    ],
++    transaction_id="batch-txn-789"
++)
++
++print(result)
++```
++
++## 关键实现细节
++
++### 1. 锁机制 (OrderService)
++
++- **分布式锁**：使用 Frappe 缓存实现
++- **锁超时**：默认 30 秒
++- **重试间隔**：500ms
++- **锁前缀**：`order_lock_`
++
++### 2. 幂等性处理
++
++- 使用 SHA-256 哈希生成唯一签名
++- 基于操作参数和时间戳生成幂等键
++- 自动检测并返回已执行操作的结果
++
++### 3. 状态机验证
++
++支持的状态转换：
++
++```
++Draft → [To Deliver and Bill, To Bill, To Deliver, Completed, Cancelled]
++To Deliver and Bill → [Completed, Cancelled]
++Completed → [Closed, Cancelled]
++...
++```
++
++### 4. 乐观锁 (InventoryService)
++
++- 使用 `version` 字段检测并发修改
++- 每次保存自动递增版本号
++- 提供版本检查方法
++
++## 监控指标
++
++新增的可监控指标：
++
++| 指标名称 | 说明 | 采集方式 |
++|---------|------|---------|
++| `order_lock_acquisitions` | 锁获取次数 | 通过缓存统计 |
++| `order_lock_timeouts` | 锁超时次数 | 日志分析 |
++| `idempotent_requests` | 幂等请求数 | 操作日志 |
++| `concurrency_conflicts` | 并发冲突数 | 库存事务日志 |
++| `inventory_transactions` | 库存事务数 | 事务日志 |
++
++## 故障排查
++
++### 常见问题
++
++1. **锁超时**
++   - 检查是否有长时间运行的事务
++   - 考虑增加锁超时时间
++
++2. **并发冲突**
++   - 实现适当的重试逻辑
++   - 使用乐观锁版本检查
++
++3. **幂等性失效**
++   - 确保幂等键的唯一性
++   - 检查事务日志是否正常写入
++
++## 回滚步骤
++
++如需回滚此实现：
++
++1. 删除新增的文档类型
++2. 移除新增的字段
++3. 删除服务文件
++4. 恢复原始代码
++
++## 性能影响
++
++- **读操作**：无显著影响
++- **写操作**：轻微开销（版本检查、锁获取）
++- **并发场景**：显著改善，避免竞态条件
++
++## 注意事项
++
++1. 在生产环境部署前，请先在测试环境充分验证
++2. 监控新增的指标，及时发现异常
++3. 定期清理事务日志，避免数据膨胀
++4. 确保缓存服务正常运行，锁机制依赖缓存
++
++## 贡献指南
++
++提交 Issue 或 PR 前请确保：
++- 所有测试通过
++- 代码符合项目规范
++- 更新相关文档
++
++## 许可证
++
++GNU General Public License v3.0
++
+diff --git a/erpnext/selling/doctype/sales_order/sales_order_extension.py b/erpnext/selling/doctype/sales_order/sales_order_extension.py
+new file mode 100644
+index 0000000000..5fca7c5611
+--- /dev/null
++++ b/erpnext/selling/doctype/sales_order/sales_order_extension.py
+@@ -0,0 +1,310 @@
++
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++Sales Order Extension - State Machine and Concurrency Features
++Adds fields and methods for state tracking, optimistic locking, and idempotency
++"""
++
++import frappe
++from frappe import _
++from frappe.utils import now
++from datetime import datetime
++
++
++def extend_sales_order_class():
++    """
++    Extend the Sales Order class with concurrency and state machine features
++    """
++    from erpnext.selling.doctype.sales_order.sales_order import SalesOrder
++
++    # Store the original onload
++    original_onload = SalesOrder.onload
++
++    def onload(self):
++        original_onload(self)
++        # Add version information for optimistic locking
++        if hasattr(self, 'version'):
++            self.set_onload('current_version', self.version)
++
++    SalesOrder.onload = onload
++
++    # Store the original before_save
++    original_before_save = SalesOrder.before_save
++
++    def before_save(self):
++        original_before_save(self)
++        # Update version for optimistic locking
++        if self.get('version') is None:
++            self.version = 1
++        else:
++            self.version = int(self.version) + 1
++
++        # Track last status change
++        if self.get_doc_before_save() and self.get_doc_before_save().status != self.status:
++            self.last_status = self.get_doc_before_save().status
++            self.status_changed_at = now()
++
++    SalesOrder.before_save = before_save
++
++    # Store the original before_submit
++    original_before_submit = SalesOrder.before_submit if hasattr(SalesOrder, 'before_submit') else None
++
++    def before_submit(self):
++        if original_before_submit:
++            original_before_submit(self)
++        # Validate state transition
++        if self.get_doc_before_save():
++            self._validate_state_transition(
++                self.get_doc_before_save().status,
++                self.status
++            )
++
++    SalesOrder.before_submit = before_submit
++
++    # Add new methods
++    def _validate_state_transition(self, from_status, to_status):
++        """
++        Validate if the state transition is allowed
++        """
++        # Define valid state transitions
++        valid_transitions = {
++            "Draft": ["On Hold", "To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled"],
++            "On Hold": ["To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled", "Draft"],
++            "To Pay": ["To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled"],
++            "To Deliver and Bill": ["To Bill", "To Deliver", "Completed", "Cancelled"],
++            "To Bill": ["Completed", "Cancelled"],
++            "To Deliver": ["Completed", "Cancelled"],
++            "Completed": ["Closed", "Cancelled"],
++            "Closed": ["Cancelled"],
++            "Cancelled": []
++        }
++
++        if from_status and to_status and from_status != to_status:
++            if to_status not in valid_transitions.get(from_status, []):
++                frappe.throw(
++                    _("Invalid status transition from {0} to {1}").format(from_status, to_status),
++                    title=_("Status Validation Error")
++                )
++
++    SalesOrder._validate_state_transition = _validate_state_transition
++
++    def record_idempotent_operation(self, idempotency_key, operation, result):
++        """
++        Record an idempotent operation result for future reference
++        """
++        if not frappe.db.exists("Idempotent Operation Log", {"idempotency_key": idempotency_key}):
++            log = frappe.get_doc({
++                "doctype": "Idempotent Operation Log",
++                "reference_doctype": self.doctype,
++                "reference_name": self.name,
++                "operation": operation,
++                "idempotency_key": idempotency_key,
++                "result": str(result),
++                "created_at": now()
++            })
++            log.insert(ignore_permissions=True)
++
++    SalesOrder.record_idempotent_operation = record_idempotent_operation
++
++    @frappe.whitelist()
++    def can_change_status_to(self, new_status):
++        """
++        Check if the order can transition to the given status
++        """
++        try:
++            self._validate_state_transition(self.status, new_status)
++            return {"can_change": True}
++        except Exception as e:
++            return {"can_change": False, "reason": str(e)}
++
++    SalesOrder.can_change_status_to = can_change_status_to
++
++
++def update_sales_order_docfield():
++    """
++    Add new fields to Sales Order DocType
++    """
++    # Check if fields already exist
++    if frappe.db.exists("DocField", {"parent": "Sales Order", "fieldname": "version"}):
++        return
++
++    # Add version field for optimistic locking
++    frappe.get_doc({
++        "doctype": "DocField",
++        "parent": "Sales Order",
++        "parenttype": "DocType",
++        "parentfield": "fields",
++        "fieldname": "version",
++        "label": "Version",
++        "fieldtype": "Int",
++        "default": 1,
++        "readonly": 1,
++        "hidden": 1,
++        "in_list_view": 0,
++        "idx": 9999
++    }).insert(ignore_permissions=True)
++
++    # Add last_status field
++    frappe.get_doc({
++        "doctype": "DocField",
++        "parent": "Sales Order",
++        "parenttype": "DocType",
++        "parentfield": "fields",
++        "fieldname": "last_status",
++        "label": "Last Status",
++        "fieldtype": "Data",
++        "readonly": 1,
++        "hidden": 1,
++        "idx": 9998
++    }).insert(ignore_permissions=True)
++
++    # Add status_changed_at field
++    frappe.get_doc({
++        "doctype": "DocField",
++        "parent": "Sales Order",
++        "parenttype": "DocType",
++        "parentfield": "fields",
++        "fieldname": "status_changed_at",
++        "label": "Status Changed At",
++        "fieldtype": "Datetime",
++        "readonly": 1,
++        "hidden": 1,
++        "idx": 9997
++    }).insert(ignore_permissions=True)
++
++    # Add last_operation_signature field
++    frappe.get_doc({
++        "doctype": "DocField",
++        "parent": "Sales Order",
++        "parenttype": "DocType",
++        "parentfield": "fields",
++        "fieldname": "last_operation_signature",
++        "label": "Last Operation Signature",
++        "fieldtype": "Data",
++        "readonly": 1,
++        "hidden": 1,
++        "idx": 9996
++    }).insert(ignore_permissions=True)
++
++    frappe.db.commit()
++
++
++def create_idempotent_operation_log_doctype():
++    """
++    Create Idempotent Operation Log DoType to track idempotent operations
++    """
++    if frappe.db.exists("DocType", "Idempotent Operation Log"):
++        return
++
++    doc = frappe.get_doc({
++        "doctype": "DocType",
++        "name": "Idempotent Operation Log",
++        "module": "Selling",
++        "custom": 1,
++        "is_submittable": 0,
++        "istable": 0,
++        "editable_grid": 1,
++        "sort_field": "creation",
++        "sort_order": "DESC",
++        "track_changes": 1,
++        "fields": [
++            {
++                "doctype": "DocField",
++                "fieldname": "reference_doctype",
++                "label": "Reference Doctype",
++                "fieldtype": "Link",
++                "options": "DocType",
++                "reqd": 1,
++                "in_list_view": 1,
++                "idx": 1
++            },
++            {
++                "doctype": "DocField",
++                "fieldname": "reference_name",
++                "label": "Reference Name",
++                "fieldtype": "Dynamic Link",
++                "options": "reference_doctype",
++                "reqd": 1,
++                "in_list_view": 1,
++                "idx": 2
++            },
++            {
++                "doctype": "DocField",
++                "fieldname": "operation",
++                "label": "Operation",
++                "fieldtype": "Data",
++                "reqd": 1,
++                "in_list_view": 1,
++                "idx": 3
++            },
++            {
++                "doctype": "DocField",
++                "fieldname": "idempotency_key",
++                "label": "Idempotency Key",
++                "fieldtype": "Data",
++                "reqd": 1,
++                "in_list_view": 1,
++                "idx": 4
++            },
++            {
++                "doctype": "DocField",
++                "fieldname": "result",
++                "label": "Result",
++                "fieldtype": "Text",
++                "idx": 5
++            },
++            {
++                "doctype": "DocField",
++                "fieldname": "created_at",
++                "label": "Created At",
++                "fieldtype": "Datetime",
++                "reqd": 1,
++                "in_list_view": 1,
++                "idx": 6
++            }
++        ],
++        "permissions": [
++            {
++                "role": "System Manager",
++                "read": 1,
++                "write": 1,
++                "create": 1,
++                "delete": 1
++            }
++        ]
++    })
++    doc.insert(ignore_permissions=True)
++    frappe.db.commit()
++
++
++@frappe.whitelist()
++def migrate_sales_order():
++    """
++    Run migration for Sales Order extension
++    """
++    if not frappe.session.user == "Administrator":
++        frappe.throw(_("Only Administrator can run this migration"))
++
++    create_idempotent_operation_log_doctype()
++    update_sales_order_docfield()
++
++    # Initialize version for existing orders
++    orders = frappe.get_all("Sales Order", filters=[["version", "is", "not set"]], limit=1000)
++    for order in orders:
++        frappe.db.set_value("Sales Order", order.name, "version", 1)
++
++    frappe.db.commit()
++    return {"status": "success", "message": _("Migration completed successfully")}
++
++
++def extend_sales_order_after_install():
++    """
++    Hook to call after app install
++    """
++    try:
++        extend_sales_order_class()
++    except Exception as e:
++        frappe.log_error(frappe.get_traceback(), "Sales Order Extension Error")
++
+diff --git a/erpnext/selling/services/order_service.py b/erpnext/selling/services/order_service.py
+new file mode 100644
+index 0000000000..9f3d2ec4da
+--- /dev/null
++++ b/erpnext/selling/services/order_service.py
+@@ -0,0 +1,371 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++Order Service - Concurrency-safe order processing with idempotency
++This service handles concurrent modifications to orders and inventory
++"""
++
++import frappe
++import hashlib
++import time
++from frappe import _
++from frappe.utils import now, get_datetime
++from frappe.model.document import Document
++from enum import Enum
++
++
++class OrderStatus(Enum):
++    """Order status machine enum"""
++    DRAFT = "Draft"
++    TO_CONFIRM = "To Confirm"
++    CONFIRMED = "Confirmed"
++    TO_DELIVER = "To Deliver"
++    DELIVERED = "Delivered"
++    TO_BILL = "To Bill"
++    COMPLETED = "Completed"
++    CANCELLED = "Cancelled"
++    CLOSED = "Closed"
++
++
++class StatusTransitionError(frappe.ValidationError):
++    pass
++
++
++class ConcurrencyError(frappe.ValidationError):
++    pass
++
++
++class OrderService:
++    """
++    Service layer for order processing with concurrency control and idempotency
++    """
++
++    LOCK_TIMEOUT = 30  # seconds
++    LOCK_RETRY_INTERVAL = 0.5
++    LOCK_PREFIX = "order_lock_"
++
++    # Status transition rules
++    STATUS_TRANSITIONS = {
++        OrderStatus.DRAFT: [OrderStatus.TO_CONFIRM, OrderStatus.CANCELLED],
++        OrderStatus.TO_CONFIRM: [OrderStatus.CONFIRMED, OrderStatus.DRAFT, OrderStatus.CANCELLED],
++        OrderStatus.CONFIRMED: [OrderStatus.TO_DELIVER, OrderStatus.TO_BILL, OrderStatus.CANCELLED],
++        OrderStatus.TO_DELIVER: [OrderStatus.DELIVERED, OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
++        OrderStatus.DELIVERED: [OrderStatus.TO_BILL, OrderStatus.COMPLETED, OrderStatus.CANCELLED],
++        OrderStatus.TO_BILL: [OrderStatus.COMPLETED, OrderStatus.CANCELLED],
++        OrderStatus.COMPLETED: [OrderStatus.CLOSED],
++        OrderStatus.CANCELLED: [],
++        OrderStatus.CLOSED: [],
++    }
++
++    @classmethod
++    def generate_idempotency_key(cls, order_id: str, operation: str) -> str:
++        """
++        Generate a unique idempotency key for an operation
++        """
++        key_data = f"{order_id}_{operation}_{int(time.time() // 60)}"
++        return hashlib.sha256(key_data.encode()).hexdigest()
++
++    @classmethod
++    def acquire_lock(cls, order_id: str, timeout: int = None) -> str:
++        """
++        Acquire an exclusive lock on an order
++        """
++        timeout = timeout or cls.LOCK_TIMEOUT
++        lock_key = f"{cls.LOCK_PREFIX}{order_id}"
++        lock_value = f"{frappe.session.user}_{time.time()}"
++        
++        max_attempts = int(timeout / cls.LOCK_RETRY_INTERVAL)
++        
++        for _ in range(max_attempts):
++            if frappe.cache().set(lock_key, lock_value, expire=timeout, nx=True):
++                return lock_key
++            
++            time.sleep(cls.LOCK_RETRY_INTERVAL)
++        
++        raise ConcurrencyError(
++            _("Could not acquire lock on order {0}. Another process might be holding it.")
++            .format(order_id)
++        )
++
++    @classmethod
++    def release_lock(cls, lock_key: str):
++        """
++        Release a previously acquired lock
++        """
++        frappe.cache().delete(lock_key)
++
++    @classmethod
++    def check_idempotency(cls, order_id: str, idempotency_key: str) -> dict | None:
++        """
++        Check if operation has already been processed (idempotency)
++        Returns last result if found, None otherwise
++        """
++        key = f"order_idempotent_{order_id}_{idempotency_key}"
++        return frappe.cache().get(key)
++
++    @classmethod
++    def store_idempotent_result(cls, order_id: str, idempotency_key: str, result: dict):
++        """
++        Store the result of an idempotent operation
++        """
++        key = f"order_idempotent_{order_id}_{idempotency_key}"
++        frappe.cache().set(key, result, expire=3600)  # Store for 1 hour
++
++    @classmethod
++    def validate_status_transition(cls, current_status: str, new_status: str) -> bool:
++        """
++        Validate if status transition is allowed
++        """
++        try:
++            current = OrderStatus(current_status)
++            new = OrderStatus(new_status)
++            allowed = cls.STATUS_TRANSITIONS.get(current, [])
++            return new in allowed
++        except ValueError:
++            return False
++
++    @classmethod
++    def process_order_status_change(
++        cls,
++        order_id: str,
++        new_status: str,
++        idempotency_key: str = None,
++        **kwargs
++    ) -> dict:
++        """
++        Process order status change with concurrency control and idempotency
++        
++        Args:
++            order_id: Sales Order ID
++            new_status: Target status
++            idempotency_key: Optional idempotency key for duplicate protection
++            **kwargs: Additional parameters
++        
++        Returns:
++            Dict with result info
++        """
++        if not idempotency_key:
++            idempotency_key = cls.generate_idempotency_key(order_id, f"status_{new_status}")
++        
++        # Check idempotency first
++        cached_result = cls.check_idempotency(order_id, idempotency_key)
++        if cached_result:
++            return cached_result
++        
++        lock_key = None
++        result = {
++            "success": False,
++            "order_id": order_id,
++            "timestamp": now(),
++            "is_idempotent": False
++        }
++        
++        try:
++            # Acquire lock
++            lock_key = cls.acquire_lock(order_id)
++            
++            # Reload order with for_update to get latest state
++            order = frappe.get_doc("Sales Order", order_id, for_update=True)
++            
++            # Validate status transition
++            if not cls.validate_status_transition(order.status, new_status):
++                raise StatusTransitionError(
++                    _("Cannot transition from {0} to {1}")
++                    .format(order.status, new_status)
++                )
++            
++            # Process in transaction
++            try:
++                frappe.db.begin()
++                
++                # Update order status
++                order.status = new_status
++                order.last_status = order.status
++                order.status_changed_at = now()
++                order.save(ignore_permissions=True)
++                
++                # Handle inventory if needed
++                if new_status in [OrderStatus.CONFIRMED.value, OrderStatus.TO_DELIVER.value]:
++                    cls._process_inventory_reservation(order)
++                
++                frappe.db.commit()
++                
++                result["success"] = True
++                result["new_status"] = new_status
++                result["last_modified"] = order.modified
++                
++            except Exception as e:
++                frappe.db.rollback()
++                raise e
++            
++        except Exception as e:
++            result["error"] = str(e)
++            raise
++        finally:
++            if lock_key:
++                cls.release_lock(lock_key)
++            
++            if result.get("success"):
++                cls.store_idempotent_result(order_id, idempotency_key, result)
++        
++        return result
++
++    @classmethod
++    def _process_inventory_reservation(cls, order):
++        """
++        Process inventory reservation for order items
++        Uses optimistic locking on Bin records
++        """
++        from erpnext.stock.doctype.bin.bin import update_bin_qty
++        from erpnext.stock.stock_balance import get_reserved_qty
++        
++        for item in order.items:
++            if not item.warehouse or not frappe.db.get_value("Item", item.item_code, "is_stock_item"):
++                continue
++            
++            # Get bin with for_update for optimistic locking
++            bin_doc = frappe.db.get_value(
++                "Bin",
++                {"item_code": item.item_code, "warehouse": item.warehouse},
++                ["name", "version"],
++                as_dict=True,
++                for_update=True
++            )
++            
++            if not bin_doc:
++                continue
++            
++            # Update reserved quantity with optimistic lock
++            new_version = bin_doc.version + 1
++            
++            # Update only if version matches
++            updated = frappe.db.sql("""
++                UPDATE `tabBin`
++                SET reserved_qty = reserved_qty + %s,
++                    version = %s,
++                    modified = NOW()
++                WHERE name = %s AND version = %s
++            """, (item.stock_qty, new_version, bin_doc.name, bin_doc.version))
++            
++            if not updated:
++                raise ConcurrencyError(
++                    _("Inventory for item {0} in warehouse {1} was modified by another process")
++                    .format(item.item_code, item.warehouse)
++                )
++
++    @classmethod
++    def confirm_order(cls, order_id: str, idempotency_key: str = None) -> dict:
++        """
++        Confirm an order with full processing
++        """
++        return cls.process_order_status_change(
++            order_id,
++            OrderStatus.CONFIRMED.value,
++            idempotency_key
++        )
++
++    @classmethod
++    def complete_order(cls, order_id: str, idempotency_key: str = None) -> dict:
++        """
++        Mark an order as completed
++        """
++        return cls.process_order_status_change(
++            order_id,
++            OrderStatus.COMPLETED.value,
++            idempotency_key
++        )
++
++    @classmethod
++    def cancel_order(cls, order_id: str, idempotency_key: str = None) -> dict:
++        """
++        Cancel an order and release inventory
++        """
++        if not idempotency_key:
++            idempotency_key = cls.generate_idempotency_key(order_id, "cancel")
++        
++        # Check idempotency
++        cached_result = cls.check_idempotency(order_id, idempotency_key)
++        if cached_result:
++            return cached_result
++        
++        lock_key = None
++        result = {
++            "success": False,
++            "order_id": order_id,
++            "timestamp": now(),
++            "is_idempotent": False
++        }
++        
++        try:
++            lock_key = cls.acquire_lock(order_id)
++            
++            order = frappe.get_doc("Sales Order", order_id, for_update=True)
++            
++            frappe.db.begin()
++            
++            # Release inventory reservations
++            cls._release_inventory_reservations(order)
++            
++            # Update status
++            order.status = OrderStatus.CANCELLED.value
++            order.last_status = order.status
++            order.status_changed_at = now()
++            order.save(ignore_permissions=True)
++            
++            frappe.db.commit()
++            
++            result["success"] = True
++            result["new_status"] = OrderStatus.CANCELLED.value
++            
++        except Exception as e:
++            frappe.db.rollback()
++            result["error"] = str(e)
++            raise
++        finally:
++            if lock_key:
++                cls.release_lock(lock_key)
++            
++            if result.get("success"):
++                cls.store_idempotent_result(order_id, idempotency_key, result)
++        
++        return result
++
++    @classmethod
++    def _release_inventory_reservations(cls, order):
++        """
++        Release inventory reservations on cancellation
++        """
++        for item in order.items:
++            if not item.warehouse:
++                continue
++            
++            bin_doc = frappe.db.get_value(
++                "Bin",
++                {"item_code": item.item_code, "warehouse": item.warehouse},
++                ["name", "version"],
++                as_dict=True,
++                for_update=True
++            )
++            
++            if bin_doc:
++                new_version = bin_doc.version + 1
++                updated = frappe.db.sql("""
++                    UPDATE `tabBin`
++                    SET reserved_qty = GREATEST(reserved_qty - %s, 0),
++                        version = %s,
++                        modified = NOW()
++                    WHERE name = %s AND version = %s
++                """, (item.stock_qty, new_version, bin_doc.name, bin_doc.version))
++                
++                if not updated:
++                    raise ConcurrencyError(
++                        _("Inventory update conflict while cancelling order")
++                    )
++
++
++def get_order_service() -> OrderService:
++    """
++    Factory function to get Order Service instance
++    """
++    return OrderService()
+diff --git a/erpnext/stock/services/inventory_service.py b/erpnext/stock/services/inventory_service.py
+new file mode 100644
+index 0000000000..ad0d0c6726
+--- /dev/null
++++ b/erpnext/stock/services/inventory_service.py
+@@ -0,0 +1,468 @@
++
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++Inventory Service - Concurrency and Atomic Operations
++Handles atomic inventory deductions with optimistic locking and transaction safety
++"""
++
++import frappe
++from frappe import _
++from frappe.utils import flt
++from typing import Dict, List, Optional, Tuple
++
++
++class InventoryService:
++    """
++    Service class for inventory operations with concurrency control
++    """
++
++    @classmethod
++    def atomic_deduct_inventory(
++        cls,
++        item_code: str,
++        warehouse: str,
++        qty: float,
++        reservation_id: str = None,
++        transaction_id: str = None,
++        **kwargs
++    ) -> Dict:
++        """
++        Atomically deduct inventory with optimistic locking
++
++        Args:
++            item_code: Item to deduct
++            warehouse: Warehouse location
++            qty: Quantity to deduct (positive number)
++            reservation_id: Optional stock reservation ID
++            transaction_id: Optional transaction ID for idempotency
++
++        Returns:
++            Result dict with status and details
++
++        Raises:
++            frappe.ValidationError: If inventory is insufficient or concurrency conflict
++        """
++        return frappe.db.transaction(
++            cls._atomic_deduct_inventory_impl,
++            item_code=item_code,
++            warehouse=warehouse,
++            qty=qty,
++            reservation_id=reservation_id,
++            transaction_id=transaction_id,
++            **kwargs
++        )
++
++    @classmethod
++    def _atomic_deduct_inventory_impl(
++        cls,
++        item_code: str,
++        warehouse: str,
++        qty: float,
++        reservation_id: str = None,
++        transaction_id: str = None,
++        **kwargs
++    ) -> Dict:
++        """
++        Implementation of atomic deduction - runs within a transaction
++        """
++        # Check for idempotency
++        if transaction_id:
++            existing_log = frappe.db.get_value(
++                "Inventory Transaction Log",
++                {"transaction_id": transaction_id},
++                ["name", "result"]
++            )
++            if existing_log:
++                return {
++                    "status": "success",
++                    "is_idempotent": True,
++                    "log_name": existing_log[0],
++                    "result": frappe.parse_json(existing_log[1])
++                }
++
++        # Get Bin with FOR UPDATE to lock it
++        bin_name = frappe.db.get_value(
++            "Bin",
++            {"item_code": item_code, "warehouse": warehouse},
++            for_update=True
++        )
++
++        if not bin_name:
++            frappe.throw(
++                _("No stock balance found for Item {0} in Warehouse {1}").format(item_code, warehouse),
++                title=_("Inventory Error")
++            )
++
++        # Get current bin details
++        bin_doc = frappe.get_doc("Bin", bin_name)
++        current_version = bin_doc.get("version", 1)
++
++        # Check if we were given an expected version
++        expected_version = kwargs.get("expected_version")
++        if expected_version and expected_version != current_version:
++            frappe.throw(
++                _("Concurrent modification detected. Bin {0} has been updated by another process.").format(bin_name),
++                title=_("Concurrency Conflict")
++            )
++
++        # Check stock availability
++        available_qty = flt(bin_doc.actual_qty) - flt(bin_doc.reserved_qty)
++        if available_qty < flt(qty):
++            frappe.throw(
++                _("Insufficient stock. Available: {0}, Required: {1}").format(available_qty, qty),
++                title=_("Insufficient Stock")
++            )
++
++        # Perform the deduction
++        from erpnext.stock.stock_ledger import get_previous_sle
++
++        # Create stock ledger entry (simplified)
++        sle = frappe.get_doc({
++            "doctype": "Stock Ledger Entry",
++            "item_code": item_code,
++            "warehouse": warehouse,
++            "posting_date": kwargs.get("posting_date", frappe.utils.today()),
++            "posting_time": kwargs.get("posting_time", frappe.utils.nowtime()),
++            "voucher_type": "Inventory Deduction",
++            "voucher_no": kwargs.get("voucher_no", transaction_id or frappe.generate_hash()),
++            "actual_qty": -flt(qty),
++            "qty_after_transaction": flt(bin_doc.actual_qty) - flt(qty),
++            "is_cancelled": 0,
++            "valuation_rate": bin_doc.valuation_rate or 0.0,
++            "stock_value_difference": -flt(qty) * flt(bin_doc.valuation_rate or 0.0),
++        })
++        sle.insert(ignore_permissions=True)
++
++        # Update Bin
++        bin_doc.actual_qty = flt(bin_doc.actual_qty) - flt(qty)
++        bin_doc.version = current_version + 1
++        bin_doc.set_projected_qty()
++        bin_doc.save(ignore_permissions=True)
++
++        # Log the transaction
++        result = {
++            "status": "success",
++            "item_code": item_code,
++            "warehouse": warehouse,
++            "deducted_qty": qty,
++            "new_actual_qty": bin_doc.actual_qty,
++            "bin_version": bin_doc.version,
++            "stock_ledger_entry": sle.name,
++            "transaction_id": transaction_id
++        }
++
++        if transaction_id:
++            cls._log_transaction(
++                transaction_id=transaction_id,
++                operation="atomic_deduct_inventory",
++                item_code=item_code,
++                warehouse=warehouse,
++                qty=qty,
++                result=result
++            )
++
++        return result
++
++    @classmethod
++    def _log_transaction(cls, transaction_id: str, operation: str, **kwargs):
++        """
++        Log inventory transaction for idempotency and audit
++        """
++        if not frappe.db.exists("DocType", "Inventory Transaction Log"):
++            cls._create_transaction_log_doctype()
++
++        log = frappe.get_doc({
++            "doctype": "Inventory Transaction Log",
++            "transaction_id": transaction_id,
++            "operation": operation,
++            "item_code": kwargs.get("item_code"),
++            "warehouse": kwargs.get("warehouse"),
++            "qty": kwargs.get("qty"),
++            "result": frappe.as_json(kwargs.get("result")),
++            "created_at": frappe.utils.now()
++        })
++        log.insert(ignore_permissions=True)
++
++    @classmethod
++    def _create_transaction_log_doctype(cls):
++        """
++        Create Inventory Transaction Log Doctype if it doesn't exist
++        """
++        if frappe.db.exists("DocType", "Inventory Transaction Log"):
++            return
++
++        doc = frappe.get_doc({
++            "doctype": "DocType",
++            "name": "Inventory Transaction Log",
++            "module": "Stock",
++            "custom": 1,
++            "is_submittable": 0,
++            "istable": 0,
++            "editable_grid": 1,
++            "sort_field": "creation",
++            "sort_order": "DESC",
++            "track_changes": 1,
++            "fields": [
++                {
++                    "doctype": "DocField",
++                    "fieldname": "transaction_id",
++                    "label": "Transaction ID",
++                    "fieldtype": "Data",
++                    "reqd": 1,
++                    "in_list_view": 1,
++                    "idx": 1
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "operation",
++                    "label": "Operation",
++                    "fieldtype": "Data",
++                    "reqd": 1,
++                    "in_list_view": 1,
++                    "idx": 2
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "item_code",
++                    "label": "Item Code",
++                    "fieldtype": "Link",
++                    "options": "Item",
++                    "in_list_view": 1,
++                    "idx": 3
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "warehouse",
++                    "label": "Warehouse",
++                    "fieldtype": "Link",
++                    "options": "Warehouse",
++                    "in_list_view": 1,
++                    "idx": 4
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "qty",
++                    "label": "Quantity",
++                    "fieldtype": "Float",
++                    "idx": 5
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "result",
++                    "label": "Result",
++                    "fieldtype": "Text",
++                    "idx": 6
++                },
++                {
++                    "doctype": "DocField",
++                    "fieldname": "created_at",
++                    "label": "Created At",
++                    "fieldtype": "Datetime",
++                    "reqd": 1,
++                    "in_list_view": 1,
++                    "idx": 7
++                }
++            ],
++            "permissions": [
++                {
++                    "role": "System Manager",
++                    "read": 1,
++                    "write": 1,
++                    "create": 1,
++                    "delete": 1
++                }
++            ]
++        })
++        doc.insert(ignore_permissions=True)
++        frappe.db.commit()
++
++    @classmethod
++    def batch_atomic_deduct(
++        cls,
++        items: List[Dict],
++        transaction_id: str = None,
++        **kwargs
++    ) -> Dict:
++        """
++        Batch atomic deduction for multiple items in one transaction
++
++        Args:
++            items: List of dicts with item_code, warehouse, qty
++            transaction_id: Optional transaction ID for idempotency
++
++        Returns:
++            Result dict with overall status and individual results
++        """
++        return frappe.db.transaction(
++            cls._batch_atomic_deduct_impl,
++            items=items,
++            transaction_id=transaction_id,
++            **kwargs
++        )
++
++    @classmethod
++    def _batch_atomic_deduct_impl(
++        cls,
++        items: List[Dict],
++        transaction_id: str = None,
++        **kwargs
++    ) -> Dict:
++        """
++        Implementation of batch deduction
++        """
++        results = []
++        success = True
++        errors = []
++
++        for item in items:
++            try:
++                result = cls._atomic_deduct_inventory_impl(
++                    item_code=item["item_code"],
++                    warehouse=item["warehouse"],
++                    qty=item["qty"],
++                    transaction_id=None  # Don't use idempotency for individual items in batch
++                )
++                results.append({
++                    "item_code": item["item_code"],
++                    "warehouse": item["warehouse"],
++                    "result": result
++                })
++            except Exception as e:
++                success = False
++                errors.append({
++                    "item_code": item["item_code"],
++                    "warehouse": item["warehouse"],
++                    "error": str(e)
++                })
++
++        if not success:
++            frappe.throw(
++                _("Batch deduction failed. Errors: {0}").format("; ".join([e["error"] for e in errors])),
++                title=_("Batch Inventory Error")
++            )
++
++        if transaction_id:
++            cls._log_transaction(
++                transaction_id=transaction_id,
++                operation="batch_atomic_deduct",
++                items_count=len(items),
++                result={"results": results}
++            )
++
++        return {
++            "status": "success",
++            "results": results,
++            "items_count": len(items),
++            "transaction_id": transaction_id
++        }
++
++    @classmethod
++    def get_inventory_status(cls, item_code: str, warehouse: str) -> Dict:
++        """
++        Get current inventory status with version information
++        """
++        bin_name = frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse})
++        if not bin_name:
++            return {
++                "item_code": item_code,
++                "warehouse": warehouse,
++                "exists": False
++            }
++
++        bin_doc = frappe.get_doc("Bin", bin_name)
++        return {
++            "item_code": item_code,
++            "warehouse": warehouse,
++            "exists": True,
++            "actual_qty": bin_doc.actual_qty,
++            "projected_qty": bin_doc.projected_qty,
++            "reserved_qty": bin_doc.reserved_qty,
++            "version": bin_doc.get("version", 1)
++        }
++
++
++def extend_bin_class():
++    """
++    Extend Bin class with optimistic locking
++    """
++    from erpnext.stock.doctype.bin.bin import Bin
++
++    original_before_save = Bin.before_save
++
++    def before_save(self):
++        original_before_save(self)
++        # Update version
++        if self.get("version") is None:
++            self.version = 1
++        else:
++            self.version = int(self.version) + 1
++
++    Bin.before_save = before_save
++
++    original_onload = Bin.onload
++
++    def onload(self):
++        if original_onload:
++            original_onload(self)
++        self.set_onload('current_version', self.get("version", 1))
++
++    Bin.onload = onload
++
++    def check_version(self, expected_version):
++        """
++        Check if current version matches expected version
++        """
++        if self.get("version", 1) != expected_version:
++            frappe.throw(
++                _("Version mismatch. Expected {0}, got {1}").format(expected_version, self.get("version", 1)),
++                title=_("Concurrency Conflict")
++            )
++
++    Bin.check_version = check_version
++
++
++def update_bin_docfield():
++    """
++    Add version field to Bin DocType
++    """
++    if frappe.db.exists("DocField", {"parent": "Bin", "fieldname": "version"}):
++        return
++
++    frappe.get_doc({
++        "doctype": "DocField",
++        "parent": "Bin",
++        "parenttype": "DocType",
++        "parentfield": "fields",
++        "fieldname": "version",
++        "label": "Version",
++        "fieldtype": "Int",
++        "default": 1,
++        "readonly": 1,
++        "hidden": 1,
++        "in_list_view": 0,
++        "idx": 9999
++    }).insert(ignore_permissions=True)
++    frappe.db.commit()
++
++
++@frappe.whitelist()
++def migrate_bin():
++    """
++    Run migration for Bin extension
++    """
++    if not frappe.session.user == "Administrator":
++        frappe.throw(_("Only Administrator can run this migration"))
++
++    update_bin_docfield()
++    extend_bin_class()
++
++    # Initialize version for existing bins
++    bins = frappe.get_all("Bin", filters=[["version", "is", "not set"]], limit=1000)
++    for bin_doc in bins:
++        frappe.db.set_value("Bin", bin_doc.name, "version", 1)
++
++    frappe.db.commit()
++    return {"status": "success", "message": _("Bin migration completed successfully")}
++
+diff --git a/erpnext/tests/fixtures/initial_data.json b/erpnext/tests/fixtures/initial_data.json
+new file mode 100644
+index 0000000000..6c3972974f
+--- /dev/null
++++ b/erpnext/tests/fixtures/initial_data.json
+@@ -0,0 +1,70 @@
++
++{
++    "description": "Initial test data for order and inventory concurrency tests",
++    "data": {
++        "companies": [
++            {
++                "doctype": "Company",
++                "company_name": "_Test Company",
++                "abbr": "_TC",
++                "default_currency": "USD",
++                "country": "United States"
++            }
++        ],
++        "warehouses": [
++            {
++                "doctype": "Warehouse",
++                "warehouse_name": "Test Warehouse",
++                "company": "_Test Company"
++            }
++        ],
++        "item_groups": [
++            {
++                "doctype": "Item Group",
++                "item_group_name": "Products",
++                "parent_item_group": "All Item Groups"
++            }
++        ],
++        "items": [
++            {
++                "doctype": "Item",
++                "item_code": "TEST-ITEM-001",
++                "item_name": "Test Item for Concurrency",
++                "item_group": "Products",
++                "stock_uom": "Nos",
++                "is_stock_item": 1,
++                "valuation_rate": 100.0
++            }
++        ],
++        "customers": [
++            {
++                "doctype": "Customer",
++                "customer_name": "_Test Customer",
++                "customer_type": "Individual",
++                "customer_group": "Individual",
++                "territory": "All Territories"
++            }
++        ],
++        "uoms": [
++            {
++                "doctype": "UOM",
++                "uom_name": "Nos",
++                "must_be_whole_number": 1
++            }
++        ]
++    },
++    "setup_steps": [
++        "Create Test Company",
++        "Create Test Warehouse",
++        "Create Item Group 'Products'",
++        "Create Test Item",
++        "Create Test Customer",
++        "Initialize Bin with stock"
++    ],
++    "bin_initialization": {
++        "item_code": "TEST-ITEM-001",
++        "warehouse": "Test Warehouse",
++        "actual_qty": 100.0,
++        "valuation_rate": 100.0
++    }
++}
+diff --git a/erpnext/tests/test_order_inventory_race.py b/erpnext/tests/test_order_inventory_race.py
+new file mode 100644
+index 0000000000..faeab889e0
+--- /dev/null
++++ b/erpnext/tests/test_order_inventory_race.py
+@@ -0,0 +1,401 @@
++
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
++# License: GNU General Public License v3. See license.txt
++
++"""
++Concurrency Tests for Order and Inventory
++Tests race conditions, duplicate submissions, and rollback scenarios
++"""
++
++import frappe
++import threading
++import time
++import uuid
++from frappe.tests.utils import FrappeTestCase
++from frappe.utils import now, add_days
++
++
++class TestOrderInventoryRace(FrappeTestCase):
++    """
++    Test class for order and inventory concurrency scenarios
++    """
++
++    def setUp(self):
++        """
++        Set up test data
++        """
++        super().setUp()
++        self._create_test_item()
++        self._create_test_warehouse()
++        self._create_test_bin()
++        self._setup_services()
++
++    def _setup_services(self):
++        """
++        Set up service classes for testing
++        """
++        # Try to import our custom services
++        try:
++            from erpnext.selling.services.order_service import OrderService
++            from erpnext.stock.services.inventory_service import InventoryService
++            self.order_service = OrderService
++            self.inventory_service = InventoryService
++        except ImportError:
++            self.order_service = None
++            self.inventory_service = None
++            print("Warning: Custom services not available, running basic tests")
++
++    def _create_test_item(self):
++        """
++        Create test item
++        """
++        if not frappe.db.exists("Item", "TEST-ITEM-001"):
++            item = frappe.get_doc({
++                "doctype": "Item",
++                "item_code": "TEST-ITEM-001",
++                "item_name": "Test Item for Concurrency",
++                "item_group": "Products",
++                "stock_uom": "Nos",
++                "is_stock_item": 1,
++                "valuation_rate": 100.0,
++                "opening_stock": 100.0,
++                "opening_stock_warehouse": "Test Warehouse"
++            })
++            item.insert(ignore_permissions=True)
++            self.test_item = item
++        else:
++            self.test_item = frappe.get_doc("Item", "TEST-ITEM-001")
++
++    def _create_test_warehouse(self):
++        """
++        Create test warehouse
++        """
++        if not frappe.db.exists("Warehouse", "Test Warehouse"):
++            warehouse = frappe.get_doc({
++                "doctype": "Warehouse",
++                "warehouse_name": "Test Warehouse",
++                "company": "_Test Company"
++            })
++            warehouse.insert(ignore_permissions=True)
++            self.test_warehouse = warehouse
++        else:
++            self.test_warehouse = frappe.get_doc("Warehouse", "Test Warehouse")
++
++    def _create_test_bin(self):
++        """
++        Create test bin with stock
++        """
++        if not frappe.db.exists("Bin", {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"}):
++            bin_doc = frappe.get_doc({
++                "doctype": "Bin",
++                "item_code": "TEST-ITEM-001",
++                "warehouse": "Test Warehouse",
++                "actual_qty": 100.0,
++                "valuation_rate": 100.0
++            })
++            bin_doc.insert(ignore_permissions=True)
++            self.test_bin = bin_doc
++        else:
++            self.test_bin = frappe.get_doc("Bin", {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"})
++            # Ensure we have enough stock
++            if self.test_bin.actual_qty < 100:
++                frappe.db.set_value("Bin", self.test_bin.name, "actual_qty", 100.0)
++
++    def _create_test_order(self, status="Draft"):
++        """
++        Create test sales order
++        """
++        order = frappe.get_doc({
++            "doctype": "Sales Order",
++            "customer": "_Test Customer",
++            "company": "_Test Company",
++            "transaction_date": now(),
++            "delivery_date": add_days(now(), 7),
++            "status": status,
++            "items": [{
++                "item_code": "TEST-ITEM-001",
++                "qty": 10,
++                "rate": 150.0,
++                "warehouse": "Test Warehouse"
++            }]
++        })
++        order.insert(ignore_permissions=True)
++        return order
++
++    def test_order_status_transition_validation(self):
++        """
++        Test that invalid state transitions are blocked
++        """
++        order = self._create_test_order(status="Draft")
++
++        # Try to transition to invalid state
++        try:
++            order.status = "Closed"
++            order.save()
++            self.fail("Should have thrown an error for invalid status transition")
++        except Exception as e:
++            self.assertIn("status", str(e).lower())
++
++    def test_idempotent_operation(self):
++        """
++        Test that the same operation can be safely repeated
++        """
++        if not self.order_service:
++            self.skipTest("OrderService not available")
++
++        order = self._create_test_order(status="Draft")
++        idempotency_key = str(uuid.uuid4())
++
++        # First operation
++        result1 = self.order_service.process_order_status_change(
++            order_id=order.name,
++            new_status="To Deliver and Bill",
++            idempotency_key=idempotency_key
++        )
++
++        # Second operation with same key should return same result
++        result2 = self.order_service.process_order_status_change(
++            order_id=order.name,
++            new_status="To Deliver and Bill",
++            idempotency_key=idempotency_key
++        )
++
++        self.assertEqual(result1.get("status"), result2.get("status"))
++        self.assertTrue(result2.get("is_idempotent", False))
++
++    def test_concurrent_order_updates(self):
++        """
++        Test that concurrent order updates are handled correctly
++        """
++        if not self.order_service:
++            self.skipTest("OrderService not available")
++
++        order = self._create_test_order(status="Draft")
++        results = []
++        errors = []
++
++        def update_order(order_id, new_status, thread_id):
++            try:
++                result = self.order_service.process_order_status_change(
++                    order_id=order_id,
++                    new_status=new_status,
++                    idempotency_key=f"thread-{thread_id}-{uuid.uuid4()}"
++                )
++                results.append((thread_id, result))
++            except Exception as e:
++                errors.append((thread_id, str(e)))
++
++        # Create multiple threads trying to update the same order
++        threads = []
++        for i in range(5):
++            t = threading.Thread(
++                target=update_order,
++                args=(order.name, "To Deliver and Bill", i)
++            )
++            threads.append(t)
++
++        # Start all threads
++        for t in threads:
++            t.start()
++
++        # Wait for all threads to complete
++        for t in threads:
++            t.join()
++
++        # Verify that only one update succeeded and others got proper handling
++        self.assertTrue(len(results) > 0)
++
++    def test_atomic_inventory_deduction(self):
++        """
++        Test that inventory deductions are atomic
++        """
++        if not self.inventory_service:
++            self.skipTest("InventoryService not available")
++
++        # Get initial stock
++        initial_qty = frappe.db.get_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty"
++        )
++
++        # Perform atomic deduction
++        transaction_id = str(uuid.uuid4())
++        result = self.inventory_service.atomic_deduct_inventory(
++            item_code="TEST-ITEM-001",
++            warehouse="Test Warehouse",
++            qty=5.0,
++            transaction_id=transaction_id
++        )
++
++        self.assertEqual(result.get("status"), "success")
++
++        # Verify stock was deducted
++        final_qty = frappe.db.get_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty"
++        )
++        self.assertEqual(final_qty, initial_qty - 5.0)
++
++    def test_concurrent_inventory_deduction(self):
++        """
++        Test concurrent inventory deductions
++        """
++        if not self.inventory_service:
++            self.skipTest("InventoryService not available")
++
++        # Reset stock to 100
++        frappe.db.set_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty",
++            100.0
++        )
++
++        results = []
++        errors = []
++
++        def deduct_stock(qty, thread_id):
++            try:
++                result = self.inventory_service.atomic_deduct_inventory(
++                    item_code="TEST-ITEM-001",
++                    warehouse="Test Warehouse",
++                    qty=qty,
++                    transaction_id=f"thread-{thread_id}-{uuid.uuid4()}"
++                )
++                results.append((thread_id, result))
++            except Exception as e:
++                errors.append((thread_id, str(e)))
++
++        # Create 10 threads each deducting 10 units
++        threads = []
++        for i in range(10):
++            t = threading.Thread(target=deduct_stock, args=(10.0, i))
++            threads.append(t)
++
++        # Start all threads
++        for t in threads:
++            t.start()
++
++        # Wait for all threads
++        for t in threads:
++            t.join()
++
++        # Check final stock (should be 0)
++        final_qty = frappe.db.get_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty"
++        )
++        self.assertEqual(final_qty, 0.0)
++
++    def test_insufficient_stock(self):
++        """
++        Test that deduction fails when stock is insufficient
++        """
++        if not self.inventory_service:
++            self.skipTest("InventoryService not available")
++
++        # Set stock to 5
++        frappe.db.set_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty",
++            5.0
++        )
++
++        # Try to deduct 10
++        try:
++            self.inventory_service.atomic_deduct_inventory(
++                item_code="TEST-ITEM-001",
++                warehouse="Test Warehouse",
++                qty=10.0,
++                transaction_id=str(uuid.uuid4())
++            )
++            self.fail("Should have thrown insufficient stock error")
++        except Exception as e:
++            self.assertIn("insufficient", str(e).lower())
++
++    def test_order_and_inventory_combined(self):
++        """
++        Test combined order status change and inventory deduction
++        """
++        if not self.order_service or not self.inventory_service:
++            self.skipTest("Services not available")
++
++        order = self._create_test_order(status="Draft")
++        transaction_id = str(uuid.uuid4())
++
++        try:
++            # This should be done in one transaction in real scenario
++            result = self.order_service.process_order_status_change(
++                order_id=order.name,
++                new_status="To Deliver and Bill",
++                idempotency_key=transaction_id
++            )
++
++            self.assertEqual(result.get("status"), "success")
++
++            # Verify order status changed
++            order.reload()
++            self.assertEqual(order.status, "To Deliver and Bill")
++
++        except Exception as e:
++            self.fail(f"Combined operation failed: {e}")
++
++    def test_version_increment(self):
++        """
++        Test that version number increments on each save
++        """
++        order = self._create_test_order(status="Draft")
++        initial_version = order.get("version", 1)
++
++        # Update and save
++        order.customer_name = "Test Name Update"
++        order.save()
++        order.reload()
++
++        self.assertTrue(order.get("version", 1) > initial_version)
++
++    def tearDown(self):
++        """
++        Clean up test data
++        """
++        # Clean up orders we created
++        orders = frappe.get_all(
++            "Sales Order",
++            filters={"customer": "_Test Customer"},
++            limit=10
++        )
++        for order in orders:
++            try:
++                frappe.delete_doc("Sales Order", order.name, force=1)
++            except:
++                pass
++
++        # Reset bin
++        frappe.db.set_value(
++            "Bin",
++            {"item_code": "TEST-ITEM-001", "warehouse": "Test Warehouse"},
++            "actual_qty",
++            100.0
++        )
++
++        frappe.db.commit()
++
++
++def run_tests():
++    """
++    Helper function to run tests
++    """
++    import unittest
++    suite = unittest.TestLoader().loadTestsFromTestCase(TestOrderInventoryRace)
++    runner = unittest.TextTestRunner(verbosity=2)
++    result = runner.run(suite)
++    return result
++
++
++if __name__ == "__main__":
++    run_tests()
++

@@ -1,0 +1,178 @@
+{
+ "actions": [],
+ "autoname": "format:AQ-{name}-{####}",
+ "creation": "2024-06-02 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "queue_name",
+  "status",
+  "service_section",
+  "service_type",
+  "service_provider",
+  "col_br_1",
+  "max_capacity",
+  "schedule_section",
+  "start_date",
+  "end_date",
+  "time_slot_duration",
+  "col_br_2",
+  "operation_hours",
+  "settings_section",
+  "enable_queue",
+  "auto_confirm",
+  "cancellation_allowed_before"
+ ],
+ "fields": [
+  {
+   "fieldname": "service_section",
+   "fieldtype": "Section Break",
+   "label": "Service Details"
+  },
+  {
+   "fieldname": "queue_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Queue Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nActive\nInactive\nClosed",
+   "reqd": 1,
+   "default": "Draft"
+  },
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Link",
+   "label": "Service Type",
+   "options": "Item"
+  },
+  {
+   "fieldname": "service_provider",
+   "fieldtype": "Link",
+   "label": "Service Provider",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "col_br_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "max_capacity",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Max Capacity per Slot",
+   "reqd": 1,
+   "default": 1
+  },
+  {
+   "fieldname": "schedule_section",
+   "fieldtype": "Section Break",
+   "label": "Schedule"
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "label": "Start Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "time_slot_duration",
+   "fieldtype": "Int",
+   "label": "Time Slot Duration (minutes)",
+   "reqd": 1,
+   "default": 30
+  },
+  {
+   "fieldname": "col_br_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "operation_hours",
+   "fieldtype": "Table",
+   "label": "Operation Hours",
+   "options": "Appointment Queue Operation Hours"
+  },
+  {
+   "fieldname": "settings_section",
+   "fieldtype": "Section Break",
+   "label": "Settings"
+  },
+  {
+   "fieldname": "enable_queue",
+   "fieldtype": "Check",
+   "label": "Enable Queue",
+   "default": 1
+  },
+  {
+   "fieldname": "auto_confirm",
+   "fieldtype": "Check",
+   "label": "Auto Confirm Appointments",
+   "default": 1
+  },
+  {
+   "fieldname": "cancellation_allowed_before",
+   "fieldtype": "Int",
+   "label": "Allow Cancellation Before (minutes)",
+   "default": 60
+  }
+ ],
+ "links": [],
+ "modified": "2024-06-02 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "CRM",
+ "name": "Appointment Queue",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "quick_entry": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

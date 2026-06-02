@@ -262,6 +262,8 @@ def get_planned_qty(item_code, warehouse):
 def update_bin_qty(item_code, warehouse, qty_dict=None):
 	from erpnext.stock.utils import get_bin
 
+	_fence_bin(item_code, warehouse)
+
 	bin = get_bin(item_code, warehouse)
 	mismatch = False
 	for field, value in qty_dict.items():
@@ -274,6 +276,23 @@ def update_bin_qty(item_code, warehouse, qty_dict=None):
 		bin.set_projected_qty()
 		bin.db_update()
 		bin.clear_cache()
+
+
+def _fence_bin(item_code, warehouse):
+	bin_name = frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse})
+	if bin_name:
+		frappe.db.sql(
+			"SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE",
+			(bin_name,),
+		)
+	else:
+		from erpnext.stock.utils import get_or_make_bin
+
+		bin_name = get_or_make_bin(item_code, warehouse)
+		frappe.db.sql(
+			"SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE",
+			(bin_name,),
+		)
 
 
 def set_stock_balance_as_per_serial_no(

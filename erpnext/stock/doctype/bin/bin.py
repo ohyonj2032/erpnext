@@ -215,11 +215,11 @@ class Bin(Document):
 			self.db_set("projected_qty", self.projected_qty, update_modified=True)
 
 	def update_reserved_stock(self):
-		"""Update `Reserved Stock` on change in Reserved Qty of Stock Reservation Entry"""
-
 		from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 			get_sre_reserved_qty_for_item_and_warehouse,
 		)
+
+		_fence_bin_for_update(self.name)
 
 		reserved_stock = get_sre_reserved_qty_for_item_and_warehouse(self.item_code, self.warehouse)
 
@@ -251,12 +251,11 @@ def get_bin_details(bin_name):
 def update_qty(bin_name, args):
 	from erpnext.controllers.stock_controller import future_sle_exists
 
+	_fence_bin_for_update(bin_name)
+
 	bin_details = get_bin_details(bin_name)
-	# actual qty is already updated by processing current voucher
 	actual_qty = bin_details.actual_qty or 0.0
 
-	# actual qty is not up to date in case of backdated transactions
-	# or when cancellations are the most recent SLE
 	if future_sle_exists(args) or args.get("is_cancelled"):
 		actual_qty = get_actual_qty(args.get("item_code"), args.get("warehouse"))
 
@@ -265,7 +264,6 @@ def update_qty(bin_name, args):
 	indented_qty = flt(bin_details.indented_qty) + flt(args.get("indented_qty"))
 	planned_qty = flt(bin_details.planned_qty) + flt(args.get("planned_qty"))
 
-	# compute projected qty
 	projected_qty = (
 		flt(actual_qty)
 		+ flt(ordered_qty)
@@ -290,6 +288,10 @@ def update_qty(bin_name, args):
 		},
 		update_modified=True,
 	)
+
+
+def _fence_bin_for_update(bin_name):
+	frappe.db.sql("SELECT name FROM `tabBin` WHERE name = %s FOR UPDATE", (bin_name,))
 
 
 def get_actual_qty(item_code, warehouse):

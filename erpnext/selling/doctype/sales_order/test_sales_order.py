@@ -19,6 +19,7 @@ from erpnext.maintenance.doctype.maintenance_visit.test_maintenance_visit import
 )
 from erpnext.manufacturing.doctype.blanket_order.test_blanket_order import make_blanket_order
 from erpnext.selling.doctype.product_bundle.test_product_bundle import make_product_bundle
+from erpnext.selling.doctype.sales_order.lifecycle import SalesOrderLifecycle
 from erpnext.selling.doctype.sales_order.sales_order import (
 	WarehouseRequired,
 	create_pick_list,
@@ -36,6 +37,73 @@ from erpnext.tests.utils import ERPNextTestSuite
 
 
 class TestSalesOrder(ERPNextTestSuite):
+	def test_sales_order_lifecycle_submit_sequence(self):
+		events = []
+		sales_order = frappe._dict({"name": "TEST-SO"})
+
+		with (
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderStateService.on_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("state"),
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderAccountingService.on_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("accounting"),
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderStockService.on_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("stock"),
+			),
+		):
+			SalesOrderLifecycle(sales_order).on_submit()
+
+		self.assertEqual(events, ["state", "accounting", "stock"])
+
+	def test_sales_order_lifecycle_rolls_back_completed_steps_in_reverse_order(self):
+		events = []
+		sales_order = frappe._dict({"name": "TEST-SO"})
+
+		def fail_stock_step(_service):
+			events.append("stock")
+			raise frappe.ValidationError("stock failed")
+
+		with (
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderStateService.on_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("state"),
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderAccountingService.on_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("accounting"),
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderStockService.on_submit",
+				autospec=True,
+				side_effect=fail_stock_step,
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderStateService.rollback_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("rollback_state"),
+			),
+			patch(
+				"erpnext.selling.doctype.sales_order.lifecycle.SalesOrderAccountingService.rollback_submit",
+				autospec=True,
+				side_effect=lambda _service: events.append("rollback_accounting"),
+			),
+		):
+			self.assertRaises(frappe.ValidationError, SalesOrderLifecycle(sales_order).on_submit)
+
+		self.assertEqual(
+			events,
+			["state", "accounting", "stock", "rollback_accounting", "rollback_state"],
+		)
+
 	@ERPNextTestSuite.change_settings(
 		"Stock Settings",
 		{

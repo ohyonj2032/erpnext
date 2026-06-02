@@ -501,9 +501,12 @@ class SalesOrder(SellingController):
 			if d.delivered_by_supplier and not d.supplier:
 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
 
+	def get_lifecycle(self):
+		return SalesOrderLifecycle(self)
+
 	def on_submit(self):
 		super().update_prevdoc_status()
-		SalesOrderLifecycle(self).on_submit()
+		self.get_lifecycle().on_submit()
 
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]
@@ -523,7 +526,7 @@ class SalesOrder(SellingController):
 		)
 		super().on_cancel()
 		super().update_prevdoc_status()
-		SalesOrderLifecycle(self).on_cancel()
+		self.get_lifecycle().on_cancel()
 
 	def update_project(self):
 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":
@@ -568,7 +571,7 @@ class SalesOrder(SellingController):
 
 	def update_status(self, status):
 		self.check_modified_date()
-		SalesOrderLifecycle(self).update_status(status)
+		self.get_lifecycle().update_status(status)
 
 	def update_subcontracting_order_status(self):
 		from erpnext.subcontracting.doctype.subcontracting_inward_order.subcontracting_inward_order import (

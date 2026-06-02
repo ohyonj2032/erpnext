@@ -1,0 +1,1045 @@
+diff --git a/2.2.4.patch b/2.2.4.patch
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/appointment_queue/__init__.py b/erpnext/appointment_queue/__init__.py
+new file mode 100644
+index 0000000000..9bb3b70e7d
+--- /dev/null
++++ b/erpnext/appointment_queue/__init__.py
+@@ -0,0 +1,4 @@
++install_docs = [
++	{"doctype": "Role", "role_name": "Appointment Queue Manager", "name": "Appointment Queue Manager"},
++	{"doctype": "Role", "role_name": "Appointment Queue User", "name": "Appointment Queue User"},
++]
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/api.py b/erpnext/appointment_queue/api.py
+new file mode 100644
+index 0000000000..262d3a87e5
+--- /dev/null
++++ b/erpnext/appointment_queue/api.py
+@@ -0,0 +1,229 @@
++import json
++
++import frappe
++from frappe import _
++from frappe.utils import getdate, nowdate, formatdate
++
++
++@frappe.whitelist(allow_guest=True)
++def create_booking(queue, booking_date, customer_name, customer_phone=None, customer_email=None, notes=None):
++	"""
++	Create a new appointment queue booking.
++
++	Args:
++	    queue (str): Name of the Appointment Queue
++	    booking_date (str): Date in YYYY-MM-DD format
++	    customer_name (str): Customer's full name
++	    customer_phone (str, optional): Customer's phone number
++	    customer_email (str, optional): Customer's email address
++	    notes (str, optional): Additional notes
++
++	Returns:
++	    dict: Booking details including booking_number, queue_number, slot_time, status
++	"""
++	if isinstance(queue, str) and queue.startswith("{"):
++		args = json.loads(queue)
++		queue = args.get("queue")
++		booking_date = args.get("booking_date")
++		customer_name = args.get("customer_name")
++		customer_phone = args.get("customer_phone")
++		customer_email = args.get("customer_email")
++		notes = args.get("notes")
++
++	if not queue or not booking_date or not customer_name:
++		frappe.throw(_("queue, booking_date, and customer_name are required."))
++
++	booking = frappe.get_doc(
++		{
++			"doctype": "Appointment Queue Booking",
++			"queue": queue,
++			"booking_date": booking_date,
++			"customer_name": customer_name,
++			"customer_phone": customer_phone,
++			"customer_email": customer_email,
++			"notes": notes,
++			"status": "Booked",
++		}
++	)
++
++	booking.insert(ignore_permissions=True)
++
++	frappe.db.commit()
++
++	return {
++		"booking_number": booking.name,
++		"queue": booking.queue,
++		"queue_number": booking.queue_number,
++		"slot_time": booking.slot_time,
++		"booking_date": str(booking.booking_date),
++		"status": booking.status,
++	}
++
++
++@frappe.whitelist(allow_guest=True)
++def get_booking_status(booking_number):
++	"""
++	Get the current status of a booking.
++
++	Args:
++	    booking_number (str): The booking number (e.g., AQB-25-0001)
++
++	Returns:
++	    dict: Booking details including status, queue_number, slot_time
++	"""
++	if not booking_number:
++		frappe.throw(_("booking_number is required."))
++
++	if not frappe.db.exists("Appointment Queue Booking", booking_number):
++		frappe.throw(_("Booking {0} not found.").format(booking_number))
++
++	booking = frappe.get_doc("Appointment Queue Booking", booking_number)
++
++	return {
++		"booking_number": booking.name,
++		"queue": booking.queue,
++		"queue_number": booking.queue_number,
++		"slot_time": booking.slot_time,
++		"booking_date": str(booking.booking_date),
++		"status": booking.status,
++		"customer_name": booking.customer_name,
++	}
++
++
++@frappe.whitelist(allow_guest=True)
++def cancel_booking(booking_number):
++	"""
++	Cancel an existing booking.
++
++	Args:
++	    booking_number (str): The booking number to cancel
++
++	Returns:
++	    dict: Result with status
++	"""
++	if not booking_number:
++		frappe.throw(_("booking_number is required."))
++
++	if not frappe.db.exists("Appointment Queue Booking", booking_number):
++		frappe.throw(_("Booking {0} not found.").format(booking_number))
++
++	booking = frappe.get_doc("Appointment Queue Booking", booking_number)
++	booking.cancel_booking()
++	frappe.db.commit()
++
++	return {
++		"booking_number": booking.name,
++		"status": booking.status,
++	}
++
++
++@frappe.whitelist(allow_guest=True)
++def get_available_slots(queue, booking_date):
++	"""
++	Get available time slots for a given queue and date.
++
++	Args:
++	    queue (str): Name of the Appointment Queue
++	    booking_date (str): Date in YYYY-MM-DD format
++
++	Returns:
++	    list: Available slots with remaining capacity
++	"""
++	if isinstance(queue, str) and queue.startswith("{"):
++		args = json.loads(queue)
++		queue = args.get("queue")
++		booking_date = args.get("booking_date")
++
++	if not queue or not booking_date:
++		frappe.throw(_("queue and booking_date are required."))
++
++	if not frappe.db.exists("Appointment Queue", queue):
++		frappe.throw(_("Queue {0} not found.").format(queue))
++
++	queue_doc = frappe.get_cached_doc("Appointment Queue", queue)
++	day_of_week = getdate(booking_date).strftime("%A")
++	matching_slots = [s for s in queue_doc.slots if s.day_of_week == day_of_week]
++
++	if not matching_slots:
++		return []
++
++	available_slots = []
++	for slot_cfg in matching_slots:
++		capacity = slot_cfg.max_capacity or queue_doc.max_capacity_per_slot
++		slot_key = "{0} - {1}".format(slot_cfg.from_time, slot_cfg.to_time)
++
++		booked_count = frappe.db.count(
++			"Appointment Queue Booking",
++			{
++				"queue": queue,
++				"booking_date": booking_date,
++				"slot_time": slot_key,
++				"status": ("not in", ["Cancelled", "No Show"]),
++			},
++		)
++
++		available = capacity - booked_count
++		available_slots.append(
++			{
++				"slot_time": slot_key,
++				"from_time": str(slot_cfg.from_time),
++				"to_time": str(slot_cfg.to_time),
++				"total_capacity": capacity,
++				"booked": booked_count,
++				"available": max(available, 0),
++			}
++		)
++
++	return available_slots
++
++
++@frappe.whitelist()
++def check_in_booking(booking_number):
++	"""
++	Check in a booking (mark as arrived).
++
++	Args:
++	    booking_number (str): The booking number to check in
++
++	Returns:
++	    dict: Result with status
++	"""
++	if not booking_number:
++		frappe.throw(_("booking_number is required."))
++
++	if not frappe.db.exists("Appointment Queue Booking", booking_number):
++		frappe.throw(_("Booking {0} not found.").format(booking_number))
++
++	booking = frappe.get_doc("Appointment Queue Booking", booking_number)
++	booking.check_in()
++	frappe.db.commit()
++
++	return {
++		"booking_number": booking.name,
++		"status": booking.status,
++	}
++
++
++@frappe.whitelist()
++def get_todays_bookings(queue=None):
++	"""
++	Get all bookings for today, optionally filtered by queue.
++
++	Args:
++	    queue (str, optional): Filter by queue name
++
++	Returns:
++	    list: Today's bookings
++	"""
++	filters = {"booking_date": nowdate(), "status": ("not in", ["Cancelled", "No Show"])}
++	if queue:
++		filters["queue"] = queue
++
++	bookings = frappe.get_all(
++		"Appointment Queue Booking",
++		filters=filters,
++		fields=["name", "queue", "queue_number", "slot_time", "customer_name", "status"],
++		order_by="queue_number asc",
++	)
++
++	return bookings
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/__init__.py b/erpnext/appointment_queue/doctype/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue/__init__.py b/erpnext/appointment_queue/doctype/appointment_queue/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.json b/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.json
+new file mode 100644
+index 0000000000..1fa1501644
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.json
+@@ -0,0 +1,106 @@
++{
++ "actions": [],
++ "autoname": "field:queue_name",
++ "creation": "2026-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "queue_name",
++  "service_type",
++  "is_active",
++  "column_break_1",
++  "max_capacity_per_slot",
++  "section_break_slots",
++  "slots"
++ ],
++ "fields": [
++  {
++   "fieldname": "queue_name",
++   "fieldtype": "Data",
++   "in_list_view": 1,
++   "label": "Queue Name",
++   "reqd": 1,
++   "unique": 1
++  },
++  {
++   "fieldname": "service_type",
++   "fieldtype": "Select",
++   "in_list_view": 1,
++   "label": "Service Type",
++   "options": "General\nExpress\nVIP",
++   "reqd": 1
++  },
++  {
++   "default": "1",
++   "fieldname": "is_active",
++   "fieldtype": "Check",
++   "label": "Is Active"
++  },
++  {
++   "fieldname": "column_break_1",
++   "fieldtype": "Column Break"
++  },
++  {
++   "default": "10",
++   "fieldname": "max_capacity_per_slot",
++   "fieldtype": "Int",
++   "label": "Default Max Capacity Per Slot",
++   "reqd": 1
++  },
++  {
++   "fieldname": "section_break_slots",
++   "fieldtype": "Section Break",
++   "label": "Time Slots"
++  },
++  {
++   "fieldname": "slots",
++   "fieldtype": "Table",
++   "label": "Slots",
++   "options": "Appointment Queue Slot",
++   "reqd": 1
++  }
++ ],
++ "links": [
++  {
++   "link_doctype": "Appointment Queue Booking",
++   "link_fieldname": "queue"
++  }
++ ],
++ "modified": "2026-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Appointment Queue",
++ "name": "Appointment Queue",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Appointment Queue Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "quick_entry": 1,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1
++}
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.py b/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.py
+new file mode 100644
+index 0000000000..4f8690baa5
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue/appointment_queue.py
+@@ -0,0 +1,42 @@
++import frappe
++from frappe import _
++from frappe.model.document import Document
++
++
++class AppointmentQueue(Document):
++	# begin: auto-generated types
++	# This code is auto-generated. Do not modify anything in this block.
++
++	from typing import TYPE_CHECKING
++
++	if TYPE_CHECKING:
++		from frappe.types import DF
++
++		from erpnext.appointment_queue.doctype.appointment_queue_slot.appointment_queue_slot import (
++			AppointmentQueueSlot,
++		)
++
++		is_active: DF.Check
++		max_capacity_per_slot: DF.Int
++		queue_name: DF.Data
++		service_type: DF.Literal["General", "Express", "VIP"]
++		slots: DF.Table[AppointmentQueueSlot]
++	# end: auto-generated types
++
++	def validate(self):
++		self.validate_slots()
++
++	def validate_slots(self):
++		for slot in self.slots:
++			if slot.from_time >= slot.to_time:
++				frappe.throw(
++					_("Row #{0}: From Time cannot be later than or equal to To Time for {1}").format(
++						slot.idx, slot.day_of_week
++					)
++				)
++			if slot.max_capacity <= 0:
++				frappe.throw(
++					_("Row #{0}: Max Capacity must be greater than 0 for {1}").format(
++						slot.idx, slot.day_of_week
++					)
++				)
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_booking/__init__.py b/erpnext/appointment_queue/doctype/appointment_queue_booking/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.json b/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.json
+new file mode 100644
+index 0000000000..af95c90bd4
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.json
+@@ -0,0 +1,151 @@
++{
++ "actions": [],
++ "autoname": "format:AQB-{YY}-{####}",
++ "creation": "2026-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "queue",
++  "service_type",
++  "status",
++  "booking_date",
++  "slot_time",
++  "queue_number",
++  "section_break_customer",
++  "customer_name",
++  "customer_phone",
++  "customer_email",
++  "column_break_notes",
++  "notes"
++ ],
++ "fields": [
++  {
++   "fieldname": "queue",
++   "fieldtype": "Link",
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "label": "Queue",
++   "options": "Appointment Queue",
++   "reqd": 1
++  },
++  {
++   "fieldname": "service_type",
++   "fieldtype": "Select",
++   "label": "Service Type",
++   "options": "General\nExpress\nVIP",
++   "read_only": 1
++  },
++  {
++   "default": "Booked",
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "label": "Status",
++   "options": "Booked\nChecked In\nCancelled\nExpired\nNo Show",
++   "reqd": 1
++  },
++  {
++   "fieldname": "booking_date",
++   "fieldtype": "Date",
++   "in_list_view": 1,
++   "in_standard_filter": 1,
++   "label": "Booking Date",
++   "reqd": 1
++  },
++  {
++   "fieldname": "slot_time",
++   "fieldtype": "Data",
++   "in_list_view": 1,
++   "label": "Slot Time",
++   "read_only": 1,
++   "reqd": 1
++  },
++  {
++   "fieldname": "queue_number",
++   "fieldtype": "Int",
++   "label": "Queue Number",
++   "read_only": 1
++  },
++  {
++   "fieldname": "section_break_customer",
++   "fieldtype": "Section Break",
++   "label": "Customer Details"
++  },
++  {
++   "fieldname": "customer_name",
++   "fieldtype": "Data",
++   "in_list_view": 1,
++   "label": "Customer Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "customer_phone",
++   "fieldtype": "Data",
++   "label": "Phone"
++  },
++  {
++   "fieldname": "customer_email",
++   "fieldtype": "Data",
++   "label": "Email"
++  },
++  {
++   "fieldname": "column_break_notes",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "notes",
++   "fieldtype": "Small Text",
++   "label": "Notes"
++  }
++ ],
++ "links": [],
++ "modified": "2026-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Appointment Queue",
++ "name": "Appointment Queue Booking",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Appointment Queue Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Appointment Queue User",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "quick_entry": 1,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1
++}
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.py b/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.py
+new file mode 100644
+index 0000000000..657a8a5666
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue_booking/appointment_queue_booking.py
+@@ -0,0 +1,131 @@
++import frappe
++from frappe import _
++from frappe.model.document import Document
++from frappe.utils import nowdate, getdate, formatdate
++
++
++class AppointmentQueueBooking(Document):
++	# begin: auto-generated types
++	# This code is auto-generated. Do not modify anything in this block.
++
++	from typing import TYPE_CHECKING
++
++	if TYPE_CHECKING:
++		from frappe.types import DF
++
++		booking_date: DF.Date
++		customer_email: DF.Data | None
++		customer_name: DF.Data
++		customer_phone: DF.Data | None
++		notes: DF.SmallText | None
++		queue: DF.Link
++		queue_number: DF.Int
++		service_type: DF.Literal["General", "Express", "VIP"]
++		slot_time: DF.Data | None
++		status: DF.Literal["Booked", "Checked In", "Cancelled", "Expired", "No Show"]
++	# end: auto-generated types
++
++	def validate(self):
++		self.validate_queue_active()
++		self.validate_booking_date()
++		self.validate_slot_availability()
++
++	def validate_queue_active(self):
++		queue_doc = frappe.get_cached_doc("Appointment Queue", self.queue)
++		if not queue_doc.is_active:
++			frappe.throw(_("Appointment Queue '{0}' is not active. Please select an active queue.").format(self.queue))
++
++	def validate_booking_date(self):
++		if getdate(self.booking_date) < getdate(nowdate()):
++			frappe.throw(_("Booking Date cannot be in the past."))
++
++	def validate_slot_availability(self):
++		queue_doc = frappe.get_cached_doc("Appointment Queue", self.queue)
++		day_of_week = getdate(self.booking_date).strftime("%A")
++		matching_slots = [s for s in queue_doc.slots if s.day_of_week == day_of_week]
++		if not matching_slots:
++			frappe.throw(
++				_("No available slots for {0} on {1}. Please choose another date.").format(
++					self.queue, day_of_week
++				)
++			)
++
++	def before_insert(self):
++		self._allocate_slot_and_queue_number()
++
++	def _allocate_slot_and_queue_number(self):
++		"""
++		Allocate a time slot and queue number for the booking.
++		Uses database-level locking (FOR UPDATE) to prevent overselling
++		when multiple concurrent bookings hit the same slot.
++		"""
++		queue_doc = frappe.get_cached_doc("Appointment Queue", self.queue)
++		day_of_week = getdate(self.booking_date).strftime("%A")
++		matching_slots = [s for s in queue_doc.slots if s.day_of_week == day_of_week]
++
++		best_slot = None
++		best_slot_capacity = 0
++
++		for slot_cfg in matching_slots:
++			capacity = slot_cfg.max_capacity or queue_doc.max_capacity_per_slot
++			slot_key = "{0} - {1}".format(slot_cfg.from_time, slot_cfg.to_time)
++
++			# Use database-level pessimistic locking to prevent race conditions.
++			# The SELECT ... FOR UPDATE ensures that concurrent transactions
++			# serialize on this count query, preventing overselling.
++			booked_count = frappe.db.sql(
++				"""
++				SELECT COUNT(name) FROM `tabAppointment Queue Booking`
++				WHERE queue = %s
++				  AND booking_date = %s
++				  AND slot_time = %s
++				  AND status NOT IN ('Cancelled', 'No Show')
++				FOR UPDATE
++				""",
++				(self.queue, self.booking_date, slot_key),
++			)[0][0]
++
++			available = capacity - booked_count
++			if available > 0 and available > best_slot_capacity:
++				best_slot = (slot_key, booked_count)
++				best_slot_capacity = available
++
++		if not best_slot:
++			frappe.throw(
++				_("All slots for {0} on {1} are fully booked. Please try another date.").format(
++					self.queue, formatdate(self.booking_date)
++				)
++			)
++
++		self.slot_time = best_slot[0]
++		self.queue_number = best_slot[1] + 1
++		self.service_type = queue_doc.service_type
++
++	def on_update(self):
++		if self.has_value_changed("status") and self.status == "Cancelled":
++			self._on_cancel()
++
++	def _on_cancel(self):
++		pass
++
++	def cancel_booking(self):
++		if self.status == "Cancelled":
++			frappe.throw(_("This booking is already cancelled."))
++		if self.status == "Checked In":
++			frappe.throw(_("Cannot cancel a booking that has already been checked in."))
++		self.status = "Cancelled"
++		self.save(ignore_permissions=True)
++
++	def check_in(self):
++		if self.status == "Cancelled":
++			frappe.throw(_("Cannot check in a cancelled booking."))
++		if self.status == "Checked In":
++			frappe.throw(_("This booking is already checked in."))
++		self.status = "Checked In"
++		self.save(ignore_permissions=True)
++
++	def mark_no_show(self):
++		if self.status != "Booked":
++			frappe.throw(_("Only 'Booked' bookings can be marked as No Show."))
++		self.status = "No Show"
++		self.save(ignore_permissions=True)
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_booking/test_appointment_queue_booking.py b/erpnext/appointment_queue/doctype/appointment_queue_booking/test_appointment_queue_booking.py
+new file mode 100644
+index 0000000000..01df58cb06
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue_booking/test_appointment_queue_booking.py
+@@ -0,0 +1,211 @@
++import frappe
++from frappe.tests import IntegrationTestCase
++from frappe.utils import add_days, nowdate, getdate
++
++
++class TestAppointmentQueueBooking(IntegrationTestCase):
++	def setUp(self):
++		self.create_test_queue()
++
++	def tearDown(self):
++		frappe.db.rollback()
++
++	def create_test_queue(self):
++		if not frappe.db.exists("Appointment Queue", "Test General Queue"):
++			queue = frappe.get_doc(
++				{
++					"doctype": "Appointment Queue",
++					"queue_name": "Test General Queue",
++					"service_type": "General",
++					"is_active": 1,
++					"max_capacity_per_slot": 5,
++					"slots": [
++						{
++							"day_of_week": "Monday",
++							"from_time": "09:00:00",
++							"to_time": "10:00:00",
++							"max_capacity": 3,
++						},
++						{
++							"day_of_week": "Monday",
++							"from_time": "10:00:00",
++							"to_time": "11:00:00",
++							"max_capacity": 3,
++						},
++					],
++				}
++			)
++			queue.insert()
++			frappe.db.commit()
++
++	def _get_next_monday(self):
++		today = getdate(nowdate())
++		days_until_monday = (7 - today.weekday()) % 7
++		if days_until_monday == 0:
++			days_until_monday = 7
++		return add_days(today, days_until_monday)
++
++	def test_create_booking_success(self):
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Test Customer",
++				"customer_phone": "1234567890",
++				"status": "Booked",
++			}
++		)
++		booking.insert()
++
++		self.assertEqual(booking.status, "Booked")
++		self.assertIsNotNone(booking.slot_time)
++		self.assertIsNotNone(booking.queue_number)
++		self.assertGreater(booking.queue_number, 0)
++
++	def test_create_booking_full_slot(self):
++		booking_date = self._get_next_monday()
++
++		# Fill up the first slot (capacity 3)
++		for i in range(3):
++			booking = frappe.get_doc(
++				{
++					"doctype": "Appointment Queue Booking",
++					"queue": "Test General Queue",
++					"booking_date": booking_date,
++					"customer_name": "Customer {0}".format(i),
++					"status": "Booked",
++				}
++			)
++			booking.insert()
++
++		# The 4th booking should go to the second slot (10:00-11:00)
++		booking4 = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Customer Overflow",
++				"status": "Booked",
++			}
++		)
++		booking4.insert()
++
++		self.assertEqual(booking4.queue_number, 1)
++		self.assertIn("10:00:00", booking4.slot_time)
++
++	def test_cancel_booking(self):
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Cancel Test Customer",
++				"status": "Booked",
++			}
++		)
++		booking.insert()
++
++		booking.cancel_booking()
++		self.assertEqual(booking.status, "Cancelled")
++
++	def test_cancel_already_cancelled(self):
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Double Cancel Test",
++				"status": "Booked",
++			}
++		)
++		booking.insert()
++		booking.cancel_booking()
++
++		with self.assertRaises(frappe.ValidationError):
++			booking.cancel_booking()
++
++	def test_booking_inactive_queue(self):
++		queue = frappe.get_doc("Appointment Queue", "Test General Queue")
++		queue.is_active = 0
++		queue.save()
++		frappe.db.commit()
++
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Inactive Queue Test",
++				"status": "Booked",
++			}
++		)
++
++		with self.assertRaises(frappe.ValidationError):
++			booking.insert()
++
++		queue.is_active = 1
++		queue.save()
++		frappe.db.commit()
++
++	def test_booking_past_date(self):
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": "2020-01-01",
++				"customer_name": "Past Date Test",
++				"status": "Booked",
++			}
++		)
++
++		with self.assertRaises(frappe.ValidationError):
++			booking.insert()
++
++	def test_get_available_slots(self):
++		from erpnext.appointment_queue.api import get_available_slots
++
++		booking_date = self._get_next_monday()
++		slots = get_available_slots("Test General Queue", str(booking_date))
++
++		self.assertIsInstance(slots, list)
++		if slots:
++			self.assertIn("slot_time", slots[0])
++			self.assertIn("available", slots[0])
++			self.assertGreaterEqual(slots[0]["available"], 0)
++
++	def test_check_in(self):
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "Check In Test",
++				"status": "Booked",
++			}
++		)
++		booking.insert()
++
++		booking.check_in()
++		self.assertEqual(booking.status, "Checked In")
++
++	def test_no_show(self):
++		booking_date = self._get_next_monday()
++		booking = frappe.get_doc(
++			{
++				"doctype": "Appointment Queue Booking",
++				"queue": "Test General Queue",
++				"booking_date": booking_date,
++				"customer_name": "No Show Test",
++				"status": "Booked",
++			}
++		)
++		booking.insert()
++
++		booking.mark_no_show()
++		self.assertEqual(booking.status, "No Show")
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_slot/__init__.py b/erpnext/appointment_queue/doctype/appointment_queue_slot/__init__.py
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.json b/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.json
+new file mode 100644
+index 0000000000..9d4aeee261
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.json
+@@ -0,0 +1,58 @@
++{
++ "actions": [],
++ "creation": "2026-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "day_of_week",
++  "from_time",
++  "to_time",
++  "max_capacity"
++ ],
++ "fields": [
++  {
++   "fieldname": "day_of_week",
++   "fieldtype": "Select",
++   "in_list_view": 1,
++   "label": "Day Of Week",
++   "options": "Monday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday",
++   "reqd": 1
++  },
++  {
++   "fieldname": "from_time",
++   "fieldtype": "Time",
++   "in_list_view": 1,
++   "label": "From Time",
++   "reqd": 1
++  },
++  {
++   "fieldname": "to_time",
++   "fieldtype": "Time",
++   "in_list_view": 1,
++   "label": "To Time",
++   "reqd": 1
++  },
++  {
++   "default": "10",
++   "fieldname": "max_capacity",
++   "fieldtype": "Int",
++   "in_list_view": 1,
++   "label": "Max Capacity",
++   "reqd": 1
++  }
++ ],
++ "istable": 1,
++ "links": [],
++ "modified": "2026-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Appointment Queue",
++ "name": "Appointment Queue Slot",
++ "owner": "Administrator",
++ "permissions": [],
++ "quick_entry": 1,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1
++}
+\ No newline at end of file
+diff --git a/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.py b/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.py
+new file mode 100644
+index 0000000000..c10534c1df
+--- /dev/null
++++ b/erpnext/appointment_queue/doctype/appointment_queue_slot/appointment_queue_slot.py
+@@ -0,0 +1,22 @@
++import frappe
++from frappe.model.document import Document
++
++
++class AppointmentQueueSlot(Document):
++	# begin: auto-generated types
++	# This code is auto-generated. Do not modify anything in this block.
++
++	from typing import TYPE_CHECKING
++
++	if TYPE_CHECKING:
++		from frappe.types import DF
++
++		day_of_week: DF.Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
++		from_time: DF.Time
++		max_capacity: DF.Int
++		parent: DF.Data
++		parentfield: DF.Data
++		parenttype: DF.Data
++		to_time: DF.Time
++	# end: auto-generated types
++	pass
+\ No newline at end of file
+diff --git a/erpnext/modules.txt b/erpnext/modules.txt
+index b8b12e90fb..b3679c89c7 100644
+--- a/erpnext/modules.txt
++++ b/erpnext/modules.txt
+@@ -18,4 +18,5 @@ Communication
+ Telephony
+ Bulk Transaction
+ Subcontracting
+-EDI
+\ No newline at end of file
++EDI
++Appointment Queue
+\ No newline at end of file

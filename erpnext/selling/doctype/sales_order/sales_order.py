@@ -608,8 +608,13 @@ class SalesOrder(SellingController):
 		if mod_db and cstr(mod_db) != cstr(self.modified):
 			frappe.throw(_("{0} {1} has been modified. Please refresh.").format(self.doctype, self.name))
 
-	def update_status(self, status):
+	def update_status(self, status: str):
 		self.check_modified_date()
+		old_status = frappe.db.get_value(
+			self.doctype, self.name, "status", for_update=True
+		)
+		if old_status == status:
+			return
 		self.set_status(update=True, status=status)
 		# Upon Sales Order Re-open, check for credit limit.
 		# Limit should be checked after the 'Hold/Closed' status is reset.

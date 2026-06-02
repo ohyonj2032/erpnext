@@ -490,6 +490,7 @@ scheduler_events = {
 		"erpnext.crm.doctype.email_campaign.email_campaign.send_email_to_leads_or_contacts",
 		"erpnext.crm.doctype.email_campaign.email_campaign.set_email_campaign_status",
 		"erpnext.selling.doctype.quotation.quotation.set_expired_status",
+		"erpnext.selling.doctype.sales_order.sales_order.release_expired_stock_reservations",
 		"erpnext.buying.doctype.supplier_quotation.supplier_quotation.set_expired_status",
 		"erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts.send_auto_email",
 		"erpnext.accounts.utils.auto_create_exchange_rate_revaluation_daily",

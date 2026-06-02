@@ -2592,6 +2592,97 @@ class TestSalesOrder(ERPNextTestSuite):
 		sre_doc.reload()
 		self.assertTrue(sre_doc.status == "Delivered")
 
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": True})
+	def test_reservation_queue_manual_reschedule(self):
+		from erpnext.stock.doctype.warehouse.test_warehouse import create_warehouse
+
+		warehouse_a = create_warehouse("Reservation Queue Warehouse A", company="_Test Company")
+		warehouse_b = create_warehouse("Reservation Queue Warehouse B", company="_Test Company")
+
+		make_stock_entry(item_code="_Test Item", target=warehouse_a, qty=5, company="_Test Company")
+		make_stock_entry(item_code="_Test Item", target=warehouse_b, qty=5, company="_Test Company")
+
+		so = make_sales_order(item_code="_Test Item", qty=5, warehouse=warehouse_a, do_not_submit=1)
+		so.reserve_stock = 1
+		so.submit()
+
+		so.run_reservation_queue_action(
+			"manual_reschedule",
+			items_details=[
+				{
+					"sales_order_item": so.items[0].name,
+					"item_code": so.items[0].item_code,
+					"warehouse": warehouse_b,
+					"qty_to_reserve": 3,
+				}
+			],
+			notify=False,
+			reason="warehouse balancing",
+		)
+
+		active_sres = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": so.name, "docstatus": 1},
+			fields=["warehouse", "reserved_qty"],
+		)
+		cancelled_sres = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": so.name, "docstatus": 2},
+			fields=["name"],
+		)
+		comments = frappe.get_all(
+			"Comment",
+			filters={
+				"reference_doctype": "Sales Order",
+				"reference_name": so.name,
+				"content": ["like", "%Manual Reschedule%"],
+			},
+			fields=["name"],
+		)
+
+		self.assertEqual(len(active_sres), 1)
+		self.assertEqual(active_sres[0].warehouse, warehouse_b)
+		self.assertEqual(active_sres[0].reserved_qty, 3)
+		self.assertEqual(len(cancelled_sres), 1)
+		self.assertTrue(comments)
+
+	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": True})
+	def test_reservation_queue_timeout_release(self):
+		from erpnext.stock.doctype.warehouse.test_warehouse import create_warehouse
+
+		warehouse = create_warehouse("Reservation Queue Timeout Warehouse", company="_Test Company")
+		make_stock_entry(item_code="_Test Item", target=warehouse, qty=5, company="_Test Company")
+
+		so = make_sales_order(item_code="_Test Item", qty=5, warehouse=warehouse, do_not_submit=1)
+		so.reserve_stock = 1
+		so.submit()
+
+		so.run_reservation_queue_action("timeout_release", notify=False, reason="expired")
+
+		active_sres = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": so.name, "docstatus": 1},
+			fields=["name"],
+		)
+		cancelled_sres = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"voucher_no": so.name, "docstatus": 2},
+			fields=["name"],
+		)
+		comments = frappe.get_all(
+			"Comment",
+			filters={
+				"reference_doctype": "Sales Order",
+				"reference_name": so.name,
+				"content": ["like", "%Timeout Release%"],
+			},
+			fields=["name"],
+		)
+
+		self.assertFalse(active_sres)
+		self.assertEqual(len(cancelled_sres), 1)
+		self.assertTrue(comments)
+
 	@ERPNextTestSuite.change_settings("Selling Settings", {"allow_zero_qty_in_sales_order": 1})
 	def test_deliver_zero_qty_purchase_order(self):
 		"""

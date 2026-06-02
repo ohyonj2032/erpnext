@@ -1,0 +1,419 @@
+diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+index bba172e498..c7915371cf 100644
+--- a/erpnext/hooks.py
++++ b/erpnext/hooks.py
+@@ -490,6 +490,7 @@ scheduler_events = {
+ 		"erpnext.crm.doctype.email_campaign.email_campaign.send_email_to_leads_or_contacts",
+ 		"erpnext.crm.doctype.email_campaign.email_campaign.set_email_campaign_status",
+ 		"erpnext.selling.doctype.quotation.quotation.set_expired_status",
++		"erpnext.selling.doctype.sales_order.sales_order.release_expired_stock_reservations",
+ 		"erpnext.buying.doctype.supplier_quotation.supplier_quotation.set_expired_status",
+ 		"erpnext.accounts.doctype.process_statement_of_accounts.process_statement_of_accounts.send_auto_email",
+ 		"erpnext.accounts.utils.auto_create_exchange_rate_revaluation_daily",
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+index 4d68a79e62..7021584729 100755
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -14,7 +14,20 @@ from frappe.model.document import Document
+ from frappe.model.mapper import get_mapped_doc
+ from frappe.model.utils import get_fetch_values
+ from frappe.query_builder.functions import Sum
+-from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
++from frappe.utils import (
++	add_days,
++	add_to_date,
++	cint,
++	cstr,
++	flt,
++	get_datetime,
++	get_link_to_form,
++	getdate,
++	now_datetime,
++	nowdate,
++	parse_json,
++	strip_html,
++)
+ 
+ from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
+ 	unlink_inter_company_doc,
+@@ -525,8 +538,7 @@ class SalesOrder(SellingController):
+ 
+ 			update_coupon_code_count(self.coupon_code, "used")
+ 
+-		if self.get("reserve_stock") and not self.get("is_subcontracted"):
+-			self.create_stock_reservation_entries()
++		self.run_reservation_queue_action("submit")
+ 
+ 	def delete_removed_delivery_schedule_items(self):
+ 		items = [d.name for d in self.get("items")]
+@@ -559,7 +571,7 @@ class SalesOrder(SellingController):
+ 		self.db_set("status", "Cancelled")
+ 
+ 		self.update_blanket_order()
+-		self.cancel_stock_reservation_entries()
++		self.run_reservation_queue_action("cancel")
+ 
+ 		unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
+ 		if self.coupon_code:
+@@ -902,6 +914,172 @@ class SalesOrder(SellingController):
+ 			voucher_type=self.doctype, voucher_no=self.name, sre_list=sre_list, notify=notify
+ 		)
+ 
++	@frappe.whitelist()
++	def run_reservation_queue_action(
++		self,
++		action: str,
++		items_details: str | list[dict] | None = None,
++		notify: bool = True,
++		reason: str | None = None,
++	):
++		action = cstr(action).strip().lower()
++		self.validate_reservation_queue_action(action)
++
++		if isinstance(items_details, str):
++			items_details = parse_json(items_details)
++
++		context = frappe._dict(
++			{
++				"action": action,
++				"items_details": items_details,
++				"notify": bool(cint(notify)),
++				"reason": reason,
++			}
++		)
++		snapshot_before = self.get_reservation_queue_snapshot()
++
++		for handler in self.get_reservation_queue_handlers(action):
++			handler(context)
++
++		self.update_reserved_qty()
++		snapshot_after = self.get_reservation_queue_snapshot()
++		self.log_reservation_queue_action(context, snapshot_before, snapshot_after)
++		return snapshot_after
++
++	def validate_reservation_queue_action(self, action: str) -> None:
++		handlers = self.get_reservation_queue_handlers(action)
++		if not handlers:
++			frappe.throw(_("Unsupported reservation queue action {0}.").format(frappe.bold(action)))
++
++		if action in {"submit", "cancel"}:
++			return
++
++		if self.docstatus != 1:
++			frappe.throw(_("Reservation queue actions are only allowed on submitted Sales Orders."))
++
++	def get_reservation_queue_handlers(self, action: str) -> list:
++		action_map = {
++			"submit": [self._reserve_stock_for_queue],
++			"cancel": [self._release_queue_reservations],
++			"manual_cancel": [self._release_queue_reservations],
++			"timeout_release": [self._release_queue_reservations],
++			"manual_reschedule": [self._rebuild_queue_reservations],
++		}
++		handlers = list(action_map.get(action, []))
++		hooks = frappe.get_hooks("sales_order_reservation_queue_handlers") or {}
++		if isinstance(hooks, dict):
++			hook_methods = hooks.get(action, []) or []
++			if isinstance(hook_methods, str):
++				hook_methods = [hook_methods]
++			for method_path in hook_methods:
++				handlers.append(frappe.get_attr(method_path))
++
++		return handlers
++
++	def _reserve_stock_for_queue(self, context: frappe._dict) -> None:
++		if self.get("reserve_stock") and not self.get("is_subcontracted"):
++			self.create_stock_reservation_entries(
++				items_details=context.items_details,
++				notify=context.notify,
++			)
++
++	def _release_queue_reservations(self, context: frappe._dict) -> None:
++		self.cancel_stock_reservation_entries(notify=context.notify)
++
++	def _rebuild_queue_reservations(self, context: frappe._dict) -> None:
++		self.cancel_stock_reservation_entries(notify=False)
++		self._reserve_stock_for_queue(context)
++
++	def get_reservation_queue_snapshot(self) -> list[frappe._dict]:
++		if not self.name:
++			return []
++
++		reserved_qty_details = get_sre_reserved_qty_details_for_voucher("Sales Order", self.name)
++		snapshot = []
++		for item in self.items:
++			if not item.get("reserve_stock"):
++				continue
++
++			reserved_qty = flt(reserved_qty_details.get(item.name, 0))
++			unreserved_qty = max(flt(get_unreserved_qty(item, reserved_qty_details)), 0)
++			status = "Reserved"
++			if reserved_qty <= 0:
++				status = "Queued"
++			elif unreserved_qty > 0:
++				status = "Partially Reserved"
++
++			snapshot.append(
++				frappe._dict(
++					{
++						"sales_order_item": item.name,
++						"item_code": item.item_code,
++						"warehouse": item.warehouse,
++						"qty": flt(item.stock_qty),
++						"reserved_qty": reserved_qty,
++						"unreserved_qty": unreserved_qty,
++						"status": status,
++					}
++				)
++			)
++
++		return snapshot
++
++	def get_reservation_queue_summary(self, snapshot: list[frappe._dict]) -> frappe._dict:
++		summary = frappe._dict(
++			{
++				"queued_rows": 0,
++				"partial_rows": 0,
++				"reserved_rows": 0,
++				"reserved_qty": 0.0,
++				"unreserved_qty": 0.0,
++			}
++		)
++		for row in snapshot:
++			summary.reserved_qty += flt(row.reserved_qty)
++			summary.unreserved_qty += flt(row.unreserved_qty)
++			if row.status == "Queued":
++				summary.queued_rows += 1
++			elif row.status == "Partially Reserved":
++				summary.partial_rows += 1
++			else:
++				summary.reserved_rows += 1
++
++		return summary
++
++	def log_reservation_queue_action(
++		self,
++		context: frappe._dict,
++		snapshot_before: list[frappe._dict],
++		snapshot_after: list[frappe._dict],
++	) -> None:
++		before = self.get_reservation_queue_summary(snapshot_before)
++		after = self.get_reservation_queue_summary(snapshot_after)
++		if not snapshot_before and not snapshot_after:
++			return
++		if before == after and context.action not in {"submit", "cancel", "manual_cancel", "timeout_release", "manual_reschedule"}:
++			return
++
++		label_map = {
++			"submit": _("Submit"),
++			"cancel": _("Cancel"),
++			"manual_cancel": _("Manual Cancel"),
++			"timeout_release": _("Timeout Release"),
++			"manual_reschedule": _("Manual Reschedule"),
++		}
++		message = _(
++			"Reservation Queue {0}: reserved {1}, queued {2}, partial {3}, open qty {4}"
++		).format(
++			label_map.get(context.action, frappe.unscrub(context.action)),
++			after.reserved_rows,
++			after.queued_rows,
++			after.partial_rows,
++			after.unreserved_qty,
++		)
++		if context.reason:
++			message = _("{0}. Reason: {1}").format(message, context.reason)
++
++		self.add_comment("Info", message)
++
+ 	def set_missing_values(self, for_validate=False):
+ 		super().set_missing_values(for_validate)
+ 
+@@ -987,6 +1165,86 @@ class SalesOrder(SellingController):
+ 		query.run()
+ 
+ 
++@frappe.whitelist()
++def run_reservation_queue_action(
++	sales_order: str,
++	action: str,
++	items_details: str | list[dict] | None = None,
++	notify: bool = True,
++	reason: str | None = None,
++):
++	doc = frappe.get_doc("Sales Order", sales_order)
++	return doc.run_reservation_queue_action(
++		action=action,
++		items_details=items_details,
++		notify=notify,
++		reason=reason,
++	)
++
++
++def get_reservation_timeout_hours() -> float:
++	stock_settings_meta = frappe.get_meta("Stock Settings")
++	if stock_settings_meta.has_field("reservation_timeout_hours"):
++		return flt(frappe.get_single_value("Stock Settings", "reservation_timeout_hours"))
++	if stock_settings_meta.has_field("reservation_timeout_days"):
++		return flt(frappe.get_single_value("Stock Settings", "reservation_timeout_days")) * 24
++
++	return 0
++
++
++def get_reservation_queue_expiry(sales_order: SalesOrder):
++	sales_order_meta = frappe.get_meta("Sales Order")
++	if sales_order_meta.has_field("reservation_expires_on") and sales_order.get("reservation_expires_on"):
++		return get_datetime(sales_order.get("reservation_expires_on"))
++
++	sales_order_item_meta = frappe.get_meta("Sales Order Item")
++	if sales_order_item_meta.has_field("reservation_expires_on"):
++		expiry_candidates = [
++			get_datetime(item.reservation_expires_on)
++			for item in sales_order.items
++			if item.get("reservation_expires_on")
++		]
++		if expiry_candidates:
++			return min(expiry_candidates)
++
++	timeout_hours = get_reservation_timeout_hours()
++	if timeout_hours <= 0:
++		return None
++
++	return add_to_date(sales_order.creation, hours=timeout_hours, as_datetime=True)
++
++
++def release_expired_stock_reservations() -> None:
++	if not frappe.get_single_value("Stock Settings", "enable_stock_reservation"):
++		return
++
++	has_order_expiry = frappe.get_meta("Sales Order").has_field("reservation_expires_on")
++	has_item_expiry = frappe.get_meta("Sales Order Item").has_field("reservation_expires_on")
++	if not get_reservation_timeout_hours() and not has_order_expiry and not has_item_expiry:
++		return
++
++	sales_orders = frappe.get_all(
++		"Sales Order",
++		filters={
++			"docstatus": 1,
++			"reserve_stock": 1,
++			"status": ["not in", ["Closed", "Completed", "Cancelled"]],
++		},
++		pluck="name",
++	)
++	now = now_datetime()
++	for sales_order in sales_orders:
++		doc = frappe.get_doc("Sales Order", sales_order)
++		expires_on = get_reservation_queue_expiry(doc)
++		if expires_on and expires_on <= now and has_reserved_stock("Sales Order", doc.name):
++			doc.run_reservation_queue_action(
++				"timeout_release",
++				notify=False,
++				reason=_("Reservation timed out"),
++			)
++			frappe.db.commit()
++
++
+ def get_unreserved_qty(item: object, reserved_qty_details: dict) -> float:
+ 	"""Returns the unreserved quantity for the Sales Order Item."""
+ 
+diff --git a/erpnext/selling/doctype/sales_order/test_sales_order.py b/erpnext/selling/doctype/sales_order/test_sales_order.py
+index da46870b95..7c94fc3839 100644
+--- a/erpnext/selling/doctype/sales_order/test_sales_order.py
++++ b/erpnext/selling/doctype/sales_order/test_sales_order.py
+@@ -2592,6 +2592,97 @@ class TestSalesOrder(ERPNextTestSuite):
+ 		sre_doc.reload()
+ 		self.assertTrue(sre_doc.status == "Delivered")
+ 
++	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": True})
++	def test_reservation_queue_manual_reschedule(self):
++		from erpnext.stock.doctype.warehouse.test_warehouse import create_warehouse
++
++		warehouse_a = create_warehouse("Reservation Queue Warehouse A", company="_Test Company")
++		warehouse_b = create_warehouse("Reservation Queue Warehouse B", company="_Test Company")
++
++		make_stock_entry(item_code="_Test Item", target=warehouse_a, qty=5, company="_Test Company")
++		make_stock_entry(item_code="_Test Item", target=warehouse_b, qty=5, company="_Test Company")
++
++		so = make_sales_order(item_code="_Test Item", qty=5, warehouse=warehouse_a, do_not_submit=1)
++		so.reserve_stock = 1
++		so.submit()
++
++		so.run_reservation_queue_action(
++			"manual_reschedule",
++			items_details=[
++				{
++					"sales_order_item": so.items[0].name,
++					"item_code": so.items[0].item_code,
++					"warehouse": warehouse_b,
++					"qty_to_reserve": 3,
++				}
++			],
++			notify=False,
++			reason="warehouse balancing",
++		)
++
++		active_sres = frappe.get_all(
++			"Stock Reservation Entry",
++			filters={"voucher_no": so.name, "docstatus": 1},
++			fields=["warehouse", "reserved_qty"],
++		)
++		cancelled_sres = frappe.get_all(
++			"Stock Reservation Entry",
++			filters={"voucher_no": so.name, "docstatus": 2},
++			fields=["name"],
++		)
++		comments = frappe.get_all(
++			"Comment",
++			filters={
++				"reference_doctype": "Sales Order",
++				"reference_name": so.name,
++				"content": ["like", "%Manual Reschedule%"],
++			},
++			fields=["name"],
++		)
++
++		self.assertEqual(len(active_sres), 1)
++		self.assertEqual(active_sres[0].warehouse, warehouse_b)
++		self.assertEqual(active_sres[0].reserved_qty, 3)
++		self.assertEqual(len(cancelled_sres), 1)
++		self.assertTrue(comments)
++
++	@ERPNextTestSuite.change_settings("Stock Settings", {"enable_stock_reservation": True})
++	def test_reservation_queue_timeout_release(self):
++		from erpnext.stock.doctype.warehouse.test_warehouse import create_warehouse
++
++		warehouse = create_warehouse("Reservation Queue Timeout Warehouse", company="_Test Company")
++		make_stock_entry(item_code="_Test Item", target=warehouse, qty=5, company="_Test Company")
++
++		so = make_sales_order(item_code="_Test Item", qty=5, warehouse=warehouse, do_not_submit=1)
++		so.reserve_stock = 1
++		so.submit()
++
++		so.run_reservation_queue_action("timeout_release", notify=False, reason="expired")
++
++		active_sres = frappe.get_all(
++			"Stock Reservation Entry",
++			filters={"voucher_no": so.name, "docstatus": 1},
++			fields=["name"],
++		)
++		cancelled_sres = frappe.get_all(
++			"Stock Reservation Entry",
++			filters={"voucher_no": so.name, "docstatus": 2},
++			fields=["name"],
++		)
++		comments = frappe.get_all(
++			"Comment",
++			filters={
++				"reference_doctype": "Sales Order",
++				"reference_name": so.name,
++				"content": ["like", "%Timeout Release%"],
++			},
++			fields=["name"],
++		)
++
++		self.assertFalse(active_sres)
++		self.assertEqual(len(cancelled_sres), 1)
++		self.assertTrue(comments)
++
+ 	@ERPNextTestSuite.change_settings("Selling Settings", {"allow_zero_qty_in_sales_order": 1})
+ 	def test_deliver_zero_qty_purchase_order(self):
+ 		"""

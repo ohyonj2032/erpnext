@@ -1,19 +1,69 @@
 import json
+from enum import Enum
 
 import frappe
 from frappe.utils import now
 
 
+class OrderLifecycleState(Enum):
+    DRAFT = "Draft"
+    ON_HOLD = "On Hold"
+    TO_PAY = "To Pay"
+    TO_DELIVER_AND_BILL = "To Deliver and Bill"
+    TO_BILL = "To Bill"
+    TO_DELIVER = "To Deliver"
+    COMPLETED = "Completed"
+    CANCELLED = "Cancelled"
+    CLOSED = "Closed"
+
+
 ORDER_STATUS_TRANSITIONS = {
-    "Draft": {"On Hold", "To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled"},
-    "On Hold": {"Draft", "To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled"},
-    "To Pay": {"To Deliver and Bill", "To Bill", "To Deliver", "Completed", "Cancelled"},
-    "To Deliver and Bill": {"To Bill", "To Deliver", "Completed", "Cancelled", "Closed"},
-    "To Bill": {"Completed", "Cancelled", "Closed"},
-    "To Deliver": {"Completed", "Cancelled", "Closed"},
-    "Completed": {"Closed", "Cancelled"},
-    "Closed": {"Cancelled"},
-    "Cancelled": set(),
+    OrderLifecycleState.DRAFT.value: {
+        OrderLifecycleState.ON_HOLD.value,
+        OrderLifecycleState.TO_DELIVER_AND_BILL.value,
+        OrderLifecycleState.TO_BILL.value,
+        OrderLifecycleState.TO_DELIVER.value,
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+    },
+    OrderLifecycleState.ON_HOLD.value: {
+        OrderLifecycleState.DRAFT.value,
+        OrderLifecycleState.TO_DELIVER_AND_BILL.value,
+        OrderLifecycleState.TO_BILL.value,
+        OrderLifecycleState.TO_DELIVER.value,
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+    },
+    OrderLifecycleState.TO_PAY.value: {
+        OrderLifecycleState.TO_DELIVER_AND_BILL.value,
+        OrderLifecycleState.TO_BILL.value,
+        OrderLifecycleState.TO_DELIVER.value,
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+    },
+    OrderLifecycleState.TO_DELIVER_AND_BILL.value: {
+        OrderLifecycleState.TO_BILL.value,
+        OrderLifecycleState.TO_DELIVER.value,
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+        OrderLifecycleState.CLOSED.value,
+    },
+    OrderLifecycleState.TO_BILL.value: {
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+        OrderLifecycleState.CLOSED.value,
+    },
+    OrderLifecycleState.TO_DELIVER.value: {
+        OrderLifecycleState.COMPLETED.value,
+        OrderLifecycleState.CANCELLED.value,
+        OrderLifecycleState.CLOSED.value,
+    },
+    OrderLifecycleState.COMPLETED.value: {
+        OrderLifecycleState.CLOSED.value,
+        OrderLifecycleState.CANCELLED.value,
+    },
+    OrderLifecycleState.CLOSED.value: {OrderLifecycleState.CANCELLED.value},
+    OrderLifecycleState.CANCELLED.value: set(),
 }
 
 
@@ -32,7 +82,19 @@ def load_json(value, fallback=None):
         return [] if fallback is None else fallback
 
 
+def normalize_state(state):
+    if isinstance(state, Enum):
+        return state.value
+    return state
+
+
+def get_order_statuses():
+    return [state.value for state in OrderLifecycleState]
+
+
 def can_transition(from_status, to_status):
+    from_status = normalize_state(from_status)
+    to_status = normalize_state(to_status)
     if not from_status or not to_status or from_status == to_status:
         return True
     return to_status in ORDER_STATUS_TRANSITIONS.get(from_status, set())
@@ -41,9 +103,11 @@ def can_transition(from_status, to_status):
 def snapshot_order(order):
     return {
         "status": order.status,
-        "version": order.get("version"),
+        "last_status": order.get("last_status"),
+        "version": int(order.get("version") or 0),
         "modified": order.modified,
         "signature": order.get("signature"),
+        "status_changed_at": order.get("status_changed_at"),
         "last_result": get_last_result(order),
     }
 
@@ -56,18 +120,41 @@ def get_status_change_log(order):
     return load_json(order.get("status_change_log"), fallback=[])
 
 
+def build_status_change_record(
+    order,
+    previous_status,
+    new_status,
+    signature=None,
+    result=None,
+    rolled_back=False,
+    metadata=None,
+):
+    result = result or {}
+    return {
+        "timestamp": now(),
+        "from_status": previous_status,
+        "to_status": new_status,
+        "signature": signature,
+        "result": result,
+        "rolled_back": rolled_back,
+        "metadata": metadata or {},
+        "snapshot": snapshot_order(order),
+        "rollback_state": result.get("rollback_state"),
+    }
+
+
 def record_status_change(order, previous_status, new_status, signature=None, result=None, rolled_back=False, metadata=None):
     history = get_status_change_log(order)
     history.append(
-        {
-            "timestamp": now(),
-            "from_status": previous_status,
-            "to_status": new_status,
-            "signature": signature,
-            "result": result,
-            "rolled_back": rolled_back,
-            "metadata": metadata or {},
-        }
+        build_status_change_record(
+            order=order,
+            previous_status=previous_status,
+            new_status=new_status,
+            signature=signature,
+            result=result,
+            rolled_back=rolled_back,
+            metadata=metadata,
+        )
     )
     history = history[-20:]
     if "last_status" in order.meta.get_valid_columns():

@@ -5,6 +5,10 @@
     "company": "_Test Company",
     "customer": "_Test Customer",
     "status": "Draft",
+    "target_status": "To Deliver and Bill",
+    "qty": 5,
+    "rate": 150,
+    "stock_uom": "Nos",
     "signature": null,
     "last_result": null,
     "status_change_log": []
@@ -14,11 +18,21 @@
     "warehouse": "_Test Warehouse - _TC",
     "actual_qty": 40,
     "reserved_qty": 0,
+    "valuation_rate": 100,
     "version": 0
   },
   "assertions": {
     "duplicate_submission": "same signature returns cached result",
-    "concurrency": "only one state transition mutates data, later calls converge idempotently",
-    "rollback": "order status and stock snapshot are restored and failure result is replayable"
+    "concurrency": "only one state transition mutates data and later calls converge idempotently",
+    "rollback": "order status and stock snapshot are restored and failure result is replayable",
+    "accounting_reconciliation": "ledger amount equals deducted quantity multiplied by order rate",
+    "metrics": [
+      "lock_acquisitions",
+      "lock_releases",
+      "lock_timeouts",
+      "idempotent_hits",
+      "rollback_events",
+      "state_transition_rejections"
+    ]
   }
 }

@@ -3,13 +3,17 @@
 
 import json
 import time
-from enum import Enum
 
 import frappe
 from frappe import _
-from frappe.utils import now
+from frappe.utils import flt, now
 
-from erpnext.models.order import get_last_result, record_status_change, snapshot_order
+from erpnext.models.order import (
+    OrderLifecycleState,
+    get_last_result,
+    record_status_change,
+    snapshot_order,
+)
 from erpnext.selling.doctype.sales_order.sales_order_extension import (
     can_transition,
     extend_sales_order_class,
@@ -17,16 +21,7 @@ from erpnext.selling.doctype.sales_order.sales_order_extension import (
 )
 
 
-class OrderStatus(Enum):
-    DRAFT = "Draft"
-    ON_HOLD = "On Hold"
-    TO_PAY = "To Pay"
-    TO_DELIVER_AND_BILL = "To Deliver and Bill"
-    TO_BILL = "To Bill"
-    TO_DELIVER = "To Deliver"
-    COMPLETED = "Completed"
-    CANCELLED = "Cancelled"
-    CLOSED = "Closed"
+OrderStatus = OrderLifecycleState
 
 
 class OrderOperationError(frappe.ValidationError):
@@ -67,6 +62,22 @@ class OrderService:
         cls._bootstrapped = True
 
     @classmethod
+    def _coerce_cached_result(cls, value):
+        if not value:
+            return None
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, bytes):
+            value = value.decode()
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @classmethod
     def generate_idempotency_signature(
         cls,
         order_id,
@@ -89,13 +100,22 @@ class OrderService:
     def acquire_lock(cls, order_id, timeout=None):
         timeout = timeout or cls.LOCK_TIMEOUT
         lock_key = f"{cls.LOCK_PREFIX}{order_id}"
-        lock_value = f"{frappe.session.user}:{time.time()}"
+        lock_value = json.dumps(
+            {
+                "owner": frappe.session.user,
+                "token": frappe.generate_hash(length=12),
+                "issued_at": time.time(),
+            },
+            sort_keys=True,
+            default=str,
+        )
         attempts = max(1, int(timeout / cls.LOCK_RETRY_INTERVAL))
+        cache = frappe.cache()
 
         for _ in range(attempts):
-            if frappe.cache().set(lock_key, lock_value, expire=timeout, nx=True):
+            if cache.set(lock_key, lock_value, expire=timeout, nx=True):
                 cls._increment_metric("lock_acquisitions")
-                return lock_key
+                return {"key": lock_key, "value": lock_value}
             time.sleep(cls.LOCK_RETRY_INTERVAL)
 
         cls._increment_metric("lock_timeouts")
@@ -109,9 +129,17 @@ class OrderService:
         raise ConcurrencyError(result["error"], result=result)
 
     @classmethod
-    def release_lock(cls, lock_key):
-        if lock_key:
-            frappe.cache().delete(lock_key)
+    def release_lock(cls, lock_context):
+        if not lock_context:
+            return
+
+        cache = frappe.cache()
+        current_value = cache.get(lock_context["key"])
+        if isinstance(current_value, bytes):
+            current_value = current_value.decode()
+        if current_value == lock_context["value"]:
+            cache.delete(lock_context["key"])
+            cls._increment_metric("lock_releases")
 
     @classmethod
     def _increment_metric(cls, metric_name):
@@ -125,9 +153,13 @@ class OrderService:
         cache = frappe.cache()
         return {
             "lock_acquisitions": int(cache.get(f"{cls.METRIC_PREFIX}lock_acquisitions") or 0),
+            "lock_releases": int(cache.get(f"{cls.METRIC_PREFIX}lock_releases") or 0),
             "lock_timeouts": int(cache.get(f"{cls.METRIC_PREFIX}lock_timeouts") or 0),
             "idempotent_hits": int(cache.get(f"{cls.METRIC_PREFIX}idempotent_hits") or 0),
             "rollback_events": int(cache.get(f"{cls.METRIC_PREFIX}rollback_events") or 0),
+            "state_transition_rejections": int(
+                cache.get(f"{cls.METRIC_PREFIX}state_transition_rejections") or 0
+            ),
         }
 
     @classmethod
@@ -136,12 +168,11 @@ class OrderService:
 
     @classmethod
     def check_idempotency(cls, order_id, signature, order=None):
-        cached = frappe.cache().get(cls._idempotency_cache_key(order_id, signature))
+        cached = cls._coerce_cached_result(frappe.cache().get(cls._idempotency_cache_key(order_id, signature)))
         if cached:
             cls._increment_metric("idempotent_hits")
-            result = dict(cached)
-            result["is_idempotent"] = True
-            return result
+            cached["is_idempotent"] = True
+            return cached
 
         order = order or frappe.get_doc("Sales Order", order_id)
         last_signature = order.get("signature")
@@ -150,14 +181,18 @@ class OrderService:
             cls._increment_metric("idempotent_hits")
             result = dict(last_result)
             result["is_idempotent"] = True
-            frappe.cache().set(cls._idempotency_cache_key(order_id, signature), result, expire=3600)
+            cls.store_idempotent_result(order_id, signature, result)
             return result
 
         return None
 
     @classmethod
     def store_idempotent_result(cls, order_id, signature, result):
-        frappe.cache().set(cls._idempotency_cache_key(order_id, signature), result, expire=3600)
+        frappe.cache().set(
+            cls._idempotency_cache_key(order_id, signature),
+            json.dumps(result, sort_keys=True, default=str),
+            expire=3600,
+        )
 
     @classmethod
     def validate_status_transition(cls, current_status, new_status):
@@ -179,7 +214,7 @@ class OrderService:
     @classmethod
     def _prepare_inventory_deductions(cls, order, inventory_deductions):
         if inventory_deductions:
-            return inventory_deductions
+            return [dict(row) for row in inventory_deductions]
 
         deductions = []
         for item in order.items:
@@ -191,7 +226,7 @@ class OrderService:
                 {
                     "item_code": item.item_code,
                     "warehouse": item.warehouse,
-                    "qty": float(item.get("stock_qty") or item.get("qty") or 0),
+                    "qty": flt(item.get("stock_qty") or item.get("qty") or 0),
                 }
             )
         return deductions
@@ -199,14 +234,14 @@ class OrderService:
     @classmethod
     def _prepare_accounting_entries(cls, order, inventory_deductions, accounting_entries):
         if accounting_entries:
-            return accounting_entries
+            return [dict(entry) for entry in accounting_entries]
 
         order_items = {item.item_code: item for item in order.items}
         entries = []
         for deduction in inventory_deductions:
             row = order_items.get(deduction["item_code"])
-            qty = float(deduction.get("qty") or 0)
-            rate = float((row and row.get("rate")) or 0)
+            qty = flt(deduction.get("qty") or 0)
+            rate = flt((row and row.get("rate")) or 0)
             entries.append(
                 {
                     "reference_doctype": "Sales Order",
@@ -221,7 +256,25 @@ class OrderService:
         return entries
 
     @classmethod
+    def _build_accounting_summary(cls, accounting_entries):
+        entries = accounting_entries or []
+        return {
+            "entry_count": len(entries),
+            "ledger_amount_total": sum(flt(entry.get("ledger_amount")) for entry in entries),
+            "currencies": sorted({entry.get("ledger_currency") for entry in entries if entry.get("ledger_currency")}),
+        }
+
+    @classmethod
     def _apply_order_result(cls, order, previous_status, new_status, signature, result, rolled_back=False):
+        metadata = {
+            "success": result.get("success", False),
+            "result_status": result.get("status"),
+            "inventory_transaction_id": (result.get("inventory") or {}).get("transaction_id")
+            if isinstance(result.get("inventory"), dict)
+            else None,
+            "accounting_summary": result.get("accounting_summary"),
+            "rollback_state": result.get("rollback_state"),
+        }
         if hasattr(order, "record_status_change"):
             order.record_status_change(
                 previous_status=previous_status,
@@ -229,7 +282,7 @@ class OrderService:
                 signature=signature,
                 result=result,
                 rolled_back=rolled_back,
-                metadata={"success": result.get("success", False)},
+                metadata=metadata,
             )
         else:
             record_status_change(
@@ -239,19 +292,41 @@ class OrderService:
                 signature=signature,
                 result=result,
                 rolled_back=rolled_back,
-                metadata={"success": result.get("success", False)},
+                metadata=metadata,
             )
 
     @classmethod
     def _persist_rollback_result(cls, order_id, previous_status, new_status, signature, result):
         try:
             order = frappe.get_doc("Sales Order", order_id)
+            order.flags.skip_status_version_increment = True
             cls._apply_order_result(order, previous_status, new_status, signature, result, rolled_back=True)
             order.save(ignore_permissions=True)
+            order.flags.skip_status_version_increment = False
             frappe.db.commit()
         except Exception:
             frappe.db.rollback()
             frappe.log_error(frappe.get_traceback(), f"Failed to persist rollback result for {order_id}")
+
+    @classmethod
+    def _build_current_state_result(cls, order, signature, new_status):
+        result = dict(cls._extract_last_result(order) or {})
+        result.update(
+            {
+                "success": True,
+                "status": "success",
+                "order_id": order.name,
+                "previous_status": result.get("previous_status") or order.get("last_status") or order.status,
+                "new_status": new_status,
+                "signature": signature,
+                "version": int(order.get("version") or 0),
+                "rolled_back": False,
+                "state": cls._snapshot_order(order),
+                "timestamp": now(),
+                "metrics": cls.get_metric_snapshot(),
+            }
+        )
+        return result
 
     @classmethod
     def _build_success_result(
@@ -270,10 +345,12 @@ class OrderService:
             "previous_status": previous_status,
             "new_status": new_status,
             "signature": signature,
-            "version": order.get("version"),
+            "version": int(order.get("version") or 0),
             "inventory": inventory_result,
             "accounting_entries": accounting_entries,
+            "accounting_summary": cls._build_accounting_summary(accounting_entries),
             "rolled_back": False,
+            "state": cls._snapshot_order(order),
             "timestamp": now(),
             "metrics": cls.get_metric_snapshot(),
         }
@@ -302,6 +379,7 @@ class OrderService:
             "rollback_state": rollback_state,
             "inventory_deductions": inventory_deductions,
             "accounting_entries": accounting_entries,
+            "accounting_summary": cls._build_accounting_summary(accounting_entries),
             "timestamp": now(),
             "metrics": cls.get_metric_snapshot(),
         }
@@ -323,60 +401,64 @@ class OrderService:
             new_status=new_status,
             inventory_deductions=inventory_deductions,
             accounting_entries=accounting_entries,
-            extra_payload=kwargs,
+            extra_payload={"simulate_failure": simulate_failure, **kwargs},
         )
 
         cached = cls.check_idempotency(order_id, signature)
         if cached:
             return cached
 
-        lock_key = None
+        lock_context = None
+        previous_status = None
+        rollback_state = {}
+        deductions = []
+        entries = []
+
         try:
-            lock_key = cls.acquire_lock(order_id)
-            order = cls._lock_order_row(order_id)
-
-            cached = cls.check_idempotency(order_id, signature, order=order)
-            if cached:
-                return cached
-
-            if order.status == new_status:
-                current_result = cls._extract_last_result(order) or {
-                    "success": True,
-                    "status": "success",
-                    "order_id": order_id,
-                    "previous_status": order.status,
-                    "new_status": new_status,
-                    "signature": signature,
-                    "timestamp": now(),
-                }
-                current_result["is_idempotent"] = True
-                cls.store_idempotent_result(order_id, signature, current_result)
-                return current_result
-
-            if not cls.validate_status_transition(order.status, new_status):
-                failure = cls._build_failure_result(
-                    order_id=order_id,
-                    signature=signature,
-                    previous_status=order.status,
-                    attempted_status=new_status,
-                    error=_("Cannot transition from {0} to {1}").format(order.status, new_status),
-                    rollback_state=cls._snapshot_order(order),
-                    inventory_deductions=inventory_deductions or [],
-                    accounting_entries=accounting_entries or [],
-                )
-                cls.store_idempotent_result(order_id, signature, failure)
-                cls._persist_rollback_result(order_id, order.status, new_status, signature, failure)
-                raise StatusTransitionError(failure["error"], result=failure)
-
-            deductions = cls._prepare_inventory_deductions(order, inventory_deductions)
-            entries = cls._prepare_accounting_entries(order, deductions, accounting_entries)
-            previous_status = order.status
-            rollback_state = cls._snapshot_order(order)
-            inventory_result = {"status": "skipped", "deductions": [], "accounting_entries": []}
-
+            lock_context = cls.acquire_lock(order_id)
             try:
                 frappe.db.begin()
-                if deductions:
+                order = cls._lock_order_row(order_id)
+                previous_status = order.status
+                rollback_state = cls._snapshot_order(order)
+
+                cached = cls.check_idempotency(order_id, signature, order=order)
+                if cached:
+                    frappe.db.rollback()
+                    return cached
+
+                if order.status == new_status:
+                    cls._increment_metric("idempotent_hits")
+                    current_result = cls._build_current_state_result(order, signature, new_status)
+                    current_result["is_idempotent"] = True
+                    cls.store_idempotent_result(order_id, signature, current_result)
+                    frappe.db.rollback()
+                    return current_result
+
+                if not cls.validate_status_transition(order.status, new_status):
+                    cls._increment_metric("state_transition_rejections")
+                    failure = cls._build_failure_result(
+                        order_id=order_id,
+                        signature=signature,
+                        previous_status=order.status,
+                        attempted_status=new_status,
+                        error=_("Cannot transition from {0} to {1}").format(order.status, new_status),
+                        rollback_state=rollback_state,
+                        inventory_deductions=inventory_deductions or [],
+                        accounting_entries=accounting_entries or [],
+                    )
+                    raise StatusTransitionError(failure["error"], result=failure)
+
+                deductions = cls._prepare_inventory_deductions(order, inventory_deductions)
+                entries = cls._prepare_accounting_entries(order, deductions, accounting_entries)
+                inventory_result = {
+                    "status": "skipped",
+                    "deductions": [],
+                    "accounting_entries": [],
+                    "accounting_summary": cls._build_accounting_summary(entries),
+                }
+
+                if deductions or entries:
                     from erpnext.stock.services.inventory_service import InventoryService
 
                     inventory_result = InventoryService.apply_inventory_and_accounting(
@@ -388,9 +470,12 @@ class OrderService:
                         manage_transaction=False,
                         simulate_failure=simulate_failure,
                     )
+                elif simulate_failure:
+                    raise OrderOperationError(
+                        _("Simulated inventory/accounting rollback for Sales Order {0}").format(order.name)
+                    )
 
                 order.status = new_status
-                cls._apply_order_result(order, previous_status, new_status, signature, {})
                 order.save(ignore_permissions=True)
 
                 success_result = cls._build_success_result(
@@ -401,9 +486,16 @@ class OrderService:
                     inventory_result=inventory_result,
                     accounting_entries=entries,
                 )
+                order.flags.skip_status_version_increment = True
                 cls._apply_order_result(order, previous_status, new_status, signature, success_result)
                 order.save(ignore_permissions=True)
+                order.flags.skip_status_version_increment = False
                 frappe.db.commit()
+            except StatusTransitionError as exc:
+                frappe.db.rollback()
+                cls.store_idempotent_result(order_id, signature, exc.result)
+                cls._persist_rollback_result(order_id, previous_status, new_status, signature, exc.result)
+                raise
             except Exception as exc:
                 frappe.db.rollback()
                 cls._increment_metric("rollback_events")
@@ -424,7 +516,7 @@ class OrderService:
             cls.store_idempotent_result(order_id, signature, success_result)
             return success_result
         finally:
-            cls.release_lock(lock_key)
+            cls.release_lock(lock_context)
 
     @classmethod
     def confirm_order(cls, order_id, idempotency_key=None):

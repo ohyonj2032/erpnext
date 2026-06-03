@@ -1,14 +1,14 @@
 # Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and Contributors
 # License: GNU General Public License v3. See license.txt
 
-import json
 import hashlib
+import json
 
 import frappe
 from frappe import _
 from frappe.utils import flt, now
 
-from erpnext.models.inventory import apply_atomic_deduction, ensure_expected_version, snapshot_bin
+from erpnext.models.inventory import apply_atomic_deduction, snapshot_bin
 
 
 class InventoryOperationError(frappe.ValidationError):
@@ -38,6 +38,30 @@ class InventoryService:
         return f"{cls.IDEMPOTENCY_PREFIX}{transaction_id}"
 
     @classmethod
+    def _coerce_cached_result(cls, value):
+        if not value:
+            return None
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, bytes):
+            value = value.decode()
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    @classmethod
+    def _store_cached_transaction(cls, transaction_id, result):
+        frappe.cache().set(
+            cls._idempotency_cache_key(transaction_id),
+            json.dumps(result, sort_keys=True, default=str),
+            expire=3600,
+        )
+
+    @classmethod
     def _build_transaction_id(cls, reference_doctype, reference_name, deductions, accounting_entries):
         payload = json.dumps(
             {
@@ -52,12 +76,20 @@ class InventoryService:
         return hashlib.sha256(payload.encode()).hexdigest()
 
     @classmethod
+    def _build_accounting_summary(cls, accounting_entries):
+        entries = accounting_entries or []
+        return {
+            "entry_count": len(entries),
+            "ledger_amount_total": sum(flt(entry.get("ledger_amount")) for entry in entries),
+            "currencies": sorted({entry.get("ledger_currency") for entry in entries if entry.get("ledger_currency")}),
+        }
+
+    @classmethod
     def _get_cached_transaction(cls, transaction_id):
-        cached = frappe.cache().get(cls._idempotency_cache_key(transaction_id))
+        cached = cls._coerce_cached_result(frappe.cache().get(cls._idempotency_cache_key(transaction_id)))
         if cached:
-            result = dict(cached)
-            result["is_idempotent"] = True
-            return result
+            cached["is_idempotent"] = True
+            return cached
 
         if not frappe.db.exists("DocType", "Inventory Transaction Log"):
             return None
@@ -71,9 +103,11 @@ class InventoryService:
         if not log_result or not log_result.result:
             return None
 
-        result = json.loads(log_result.result)
+        result = cls._coerce_cached_result(log_result.result)
+        if not result:
+            return None
         result["is_idempotent"] = True
-        frappe.cache().set(cls._idempotency_cache_key(transaction_id), result, expire=3600)
+        cls._store_cached_transaction(transaction_id, result)
         return result
 
     @classmethod
@@ -87,10 +121,20 @@ class InventoryService:
         manage_transaction=True,
         **kwargs,
     ):
+        deduction = {
+            "item_code": item_code,
+            "warehouse": warehouse,
+            "qty": qty,
+        }
+        if "expected_version" in kwargs:
+            deduction["expected_version"] = kwargs.get("expected_version")
+        if kwargs.get("metadata") is not None:
+            deduction["metadata"] = kwargs.get("metadata")
+
         result = cls.apply_inventory_and_accounting(
             reference_doctype=kwargs.get("reference_doctype", "Inventory"),
             reference_name=kwargs.get("reference_name") or reservation_id or transaction_id or item_code,
-            deductions=[{"item_code": item_code, "warehouse": warehouse, "qty": qty}],
+            deductions=[deduction],
             accounting_entries=kwargs.get("accounting_entries") or [],
             transaction_id=transaction_id,
             manage_transaction=manage_transaction,
@@ -130,6 +174,7 @@ class InventoryService:
                 started_transaction = True
 
             deduction_results = [cls._deduct_one(row) for row in deductions]
+            accounting_summary = cls._build_accounting_summary(accounting_entries)
 
             if simulate_failure:
                 raise InventoryOperationError(
@@ -145,6 +190,7 @@ class InventoryService:
                 "transaction_id": transaction_id,
                 "deductions": deduction_results,
                 "accounting_entries": accounting_entries or [],
+                "accounting_summary": accounting_summary,
                 "rolled_back": False,
                 "timestamp": now(),
             }
@@ -157,7 +203,7 @@ class InventoryService:
             )
             if started_transaction:
                 frappe.db.commit()
-            frappe.cache().set(cls._idempotency_cache_key(transaction_id), result, expire=3600)
+            cls._store_cached_transaction(transaction_id, result)
             return result
         except Exception as exc:
             if started_transaction:
@@ -169,6 +215,7 @@ class InventoryService:
                 "transaction_id": transaction_id,
                 "deductions": deductions,
                 "accounting_entries": accounting_entries or [],
+                "accounting_summary": cls._build_accounting_summary(accounting_entries),
                 "rolled_back": True,
                 "error": str(exc),
                 "timestamp": now(),
@@ -180,7 +227,7 @@ class InventoryService:
                     reference_name=reference_name,
                     result=failure,
                 )
-                frappe.cache().set(cls._idempotency_cache_key(transaction_id), failure, expire=3600)
+                cls._store_cached_transaction(transaction_id, failure)
             raise InventoryOperationError(str(exc), result=failure)
 
     @classmethod
@@ -203,22 +250,22 @@ class InventoryService:
 
         bin_doc = frappe.get_doc("Bin", bin_name)
         current_version = int(bin_doc.get("version") or 0)
-        try:
-            ensure_expected_version(bin_doc, expected_version)
-        except ValueError:
-            raise InventoryOperationError(
-                _("Concurrent modification detected for Bin {0}. Expected version {1}, found {2}").format(
-                    bin_name, expected_version, current_version
-                )
-            )
-
         available_qty = flt(bin_doc.actual_qty) - flt(bin_doc.reserved_qty)
-        if available_qty < qty:
+
+        try:
+            mutation = apply_atomic_deduction(bin_doc, qty, expected_version=expected_version)
+        except ValueError as exc:
+            message = str(exc)
+            if message.startswith("expected version"):
+                raise InventoryOperationError(
+                    _("Concurrent modification detected for Bin {0}. Expected version {1}, found {2}").format(
+                        bin_name, expected_version, current_version
+                    )
+                )
             raise InventoryOperationError(
                 _("Insufficient stock. Available: {0}, Required: {1}").format(available_qty, qty)
             )
 
-        mutation = apply_atomic_deduction(bin_doc, qty)
         bin_doc.save(ignore_permissions=True)
         snapshot = snapshot_bin(bin_doc)
 
@@ -227,6 +274,7 @@ class InventoryService:
             "item_code": item_code,
             "warehouse": warehouse,
             "deducted_qty": qty,
+            "expected_version": expected_version,
             **mutation,
             "bin_snapshot": snapshot,
         }

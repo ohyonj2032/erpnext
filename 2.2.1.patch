@@ -1,0 +1,796 @@
+diff --git a/2.2.1.patch b/2.2.1.patch
+new file mode 100644
+index 0000000000..e69de29bb2
+diff --git a/erpnext/crm/api/__init__.py b/erpnext/crm/api/__init__.py
+new file mode 100644
+index 0000000000..24dd3c2ca6
+--- /dev/null
++++ b/erpnext/crm/api/__init__.py
+@@ -0,0 +1,4 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++from .appointment_queue import *
+diff --git a/erpnext/crm/api/appointment_queue.py b/erpnext/crm/api/appointment_queue.py
+new file mode 100644
+index 0000000000..a9b2e21609
+--- /dev/null
++++ b/erpnext/crm/api/appointment_queue.py
+@@ -0,0 +1,136 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe import _
++from frappe.utils import get_datetime
++from erpnext.crm.doctype.appointment_queue.appointment_queue import (
++	create_appointment_queue_entry,
++	cancel_appointment_queue_entry,
++	get_appointment_status
++)
++
++
++@frappe.whitelist(allow_guest=True)
++def get_available_slots(queue_name, date):
++	"""Get available time slots for a queue on a specific date"""
++	try:
++		queue = frappe.get_doc("Appointment Queue", queue_name)
++		slots = queue.get_available_slots(date)
++		return {
++			"success": True,
++			"slots": slots,
++			"queue_name": queue.queue_name
++		}
++	except Exception as e:
++		frappe.log_error(f"Error getting available slots: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
++
++
++@frappe.whitelist(allow_guest=True)
++def create_appointment(queue_name, scheduled_time, customer_name, **kwargs):
++	"""Create a new appointment"""
++	try:
++		entry = create_appointment_queue_entry(
++			queue_name=queue_name,
++			scheduled_time=scheduled_time,
++			customer_name=customer_name,
++			**kwargs
++		)
++		return {
++			"success": True,
++			"appointment": entry.as_dict(),
++			"message": _("Appointment created successfully")
++		}
++	except Exception as e:
++		frappe.log_error(f"Error creating appointment: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
++
++
++@frappe.whitelist(allow_guest=True)
++def get_appointment(entry_name):
++	"""Get appointment details"""
++	try:
++		status = get_appointment_status(entry_name)
++		return {
++			"success": True,
++			"appointment": status
++		}
++	except Exception as e:
++		frappe.log_error(f"Error getting appointment: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
++
++
++@frappe.whitelist(allow_guest=True)
++def cancel_appointment(entry_name):
++	"""Cancel an appointment"""
++	try:
++		entry = cancel_appointment_queue_entry(entry_name)
++		return {
++			"success": True,
++			"appointment": entry.as_dict(),
++			"message": _("Appointment cancelled successfully")
++		}
++	except Exception as e:
++		frappe.log_error(f"Error cancelling appointment: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
++
++
++@frappe.whitelist()
++def get_queue_list():
++	"""Get list of active appointment queues"""
++	try:
++		queues = frappe.get_all("Appointment Queue",
++			filters={
++				"status": "Active",
++				"enable_queue": 1
++			},
++			fields=["name", "queue_name", "service_type", "max_capacity"]
++		)
++		return {
++			"success": True,
++			"queues": queues
++		}
++	except Exception as e:
++		frappe.log_error(f"Error getting queue list: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
++
++
++@frappe.whitelist()
++def get_queue_appointments(queue_name, date=None):
++	"""Get all appointments for a queue"""
++	try:
++		filters = {"queue": queue_name}
++		if date:
++			filters["scheduled_time"] = [">=", f"{date} 00:00:00", "<=", f"{date} 23:59:59"]
++		
++		appointments = frappe.get_all("Appointment Queue Entry",
++			filters=filters,
++			fields=["*"],
++			order_by="scheduled_time asc, creation asc"
++		)
++		return {
++			"success": True,
++			"appointments": appointments
++		}
++	except Exception as e:
++		frappe.log_error(f"Error getting queue appointments: {str(e)}")
++		return {
++			"success": False,
++			"message": str(e)
++		}
+diff --git a/erpnext/crm/doctype/appointment_queue/__init__.py b/erpnext/crm/doctype/appointment_queue/__init__.py
+new file mode 100644
+index 0000000000..18b9f13a78
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/__init__.py
+@@ -0,0 +1,2 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
+diff --git a/erpnext/crm/doctype/appointment_queue/appointment_queue.json b/erpnext/crm/doctype/appointment_queue/appointment_queue.json
+new file mode 100644
+index 0000000000..9825328db2
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/appointment_queue.json
+@@ -0,0 +1,178 @@
++{
++ "actions": [],
++ "autoname": "format:AQ-{name}-{####}",
++ "creation": "2024-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "queue_name",
++  "status",
++  "service_section",
++  "service_type",
++  "service_provider",
++  "col_br_1",
++  "max_capacity",
++  "schedule_section",
++  "start_date",
++  "end_date",
++  "time_slot_duration",
++  "col_br_2",
++  "operation_hours",
++  "settings_section",
++  "enable_queue",
++  "auto_confirm",
++  "cancellation_allowed_before"
++ ],
++ "fields": [
++  {
++   "fieldname": "service_section",
++   "fieldtype": "Section Break",
++   "label": "Service Details"
++  },
++  {
++   "fieldname": "queue_name",
++   "fieldtype": "Data",
++   "in_list_view": 1,
++   "label": "Queue Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "Draft\nActive\nInactive\nClosed",
++   "reqd": 1,
++   "default": "Draft"
++  },
++  {
++   "fieldname": "service_type",
++   "fieldtype": "Link",
++   "label": "Service Type",
++   "options": "Item"
++  },
++  {
++   "fieldname": "service_provider",
++   "fieldtype": "Link",
++   "label": "Service Provider",
++   "options": "Employee"
++  },
++  {
++   "fieldname": "col_br_1",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "max_capacity",
++   "fieldtype": "Int",
++   "in_list_view": 1,
++   "label": "Max Capacity per Slot",
++   "reqd": 1,
++   "default": 1
++  },
++  {
++   "fieldname": "schedule_section",
++   "fieldtype": "Section Break",
++   "label": "Schedule"
++  },
++  {
++   "fieldname": "start_date",
++   "fieldtype": "Date",
++   "label": "Start Date",
++   "reqd": 1
++  },
++  {
++   "fieldname": "end_date",
++   "fieldtype": "Date",
++   "label": "End Date",
++   "reqd": 1
++  },
++  {
++   "fieldname": "time_slot_duration",
++   "fieldtype": "Int",
++   "label": "Time Slot Duration (minutes)",
++   "reqd": 1,
++   "default": 30
++  },
++  {
++   "fieldname": "col_br_2",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "operation_hours",
++   "fieldtype": "Table",
++   "label": "Operation Hours",
++   "options": "Appointment Queue Operation Hours"
++  },
++  {
++   "fieldname": "settings_section",
++   "fieldtype": "Section Break",
++   "label": "Settings"
++  },
++  {
++   "fieldname": "enable_queue",
++   "fieldtype": "Check",
++   "label": "Enable Queue",
++   "default": 1
++  },
++  {
++   "fieldname": "auto_confirm",
++   "fieldtype": "Check",
++   "label": "Auto Confirm Appointments",
++   "default": 1
++  },
++  {
++   "fieldname": "cancellation_allowed_before",
++   "fieldtype": "Int",
++   "label": "Allow Cancellation Before (minutes)",
++   "default": 60
++  }
++ ],
++ "links": [],
++ "modified": "2024-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "CRM",
++ "name": "Appointment Queue",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Sales Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Sales User",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "quick_entry": 1,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1
++}
+diff --git a/erpnext/crm/doctype/appointment_queue/appointment_queue.py b/erpnext/crm/doctype/appointment_queue/appointment_queue.py
+new file mode 100644
+index 0000000000..f51c76bbea
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue/appointment_queue.py
+@@ -0,0 +1,157 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe import _
++from frappe.model.document import Document
++from frappe.utils import now_datetime, get_datetime
++import datetime
++
++
++class AppointmentQueue(Document):
++	def validate(self):
++		if self.start_date and self.end_date:
++			if self.start_date > self.end_date:
++				frappe.throw(_("Start Date cannot be after End Date"))
++	
++	def get_available_slots(self, date):
++		"""Get available time slots for a given date"""
++		available_slots = []
++		
++		if not self.operation_hours:
++			return available_slots
++		
++		date_obj = get_datetime(date).date()
++		weekday = date_obj.strftime("%A")
++		
++		for hours in self.operation_hours:
++			if hours.day_of_week == weekday:
++				start_time = datetime.datetime.combine(date_obj, hours.from_time)
++				end_time = datetime.datetime.combine(date_obj, hours.to_time)
++				
++				while start_time < end_time:
++					slot_end = start_time + datetime.timedelta(minutes=self.time_slot_duration)
++					if slot_end > end_time:
++						break
++					
++					# Check slot availability with concurrency control
++					is_available = self._check_slot_availability(start_time)
++					available_slots.append({
++						"time": start_time,
++						"available": is_available
++					})
++					
++					start_time = slot_end
++		
++		return available_slots
++	
++	def _check_slot_availability(self, slot_time):
++		"""Check if a slot is available with proper concurrency control"""
++		# Use FOR UPDATE to lock the rows for concurrency control
++		entries = frappe.db.sql("""
++			SELECT COUNT(*) as count
++			FROM `tabAppointment Queue Entry`
++			WHERE queue = %s
++			AND scheduled_time = %s
++			AND status IN ('Pending', 'Confirmed')
++			FOR UPDATE
++		""", (self.name, slot_time), as_dict=True)
++		
++		count = entries[0].count if entries else 0
++		return count < self.max_capacity
++
++
++def create_appointment_queue_entry(queue_name, scheduled_time, customer_name, **kwargs):
++	"""Create a new appointment queue entry with concurrency control"""
++	queue = frappe.get_doc("Appointment Queue", queue_name)
++	
++	if not queue.enable_queue:
++		frappe.throw(_("This queue is currently disabled"))
++	
++	if queue.status != "Active":
++		frappe.throw(_("This queue is not active"))
++	
++	# Start a transaction for concurrency control
++	try:
++		frappe.db.begin()
++		
++		# Lock the queue record to prevent concurrent modifications
++		queue = frappe.get_doc("Appointment Queue", queue_name, for_update=True)
++		
++		# Check slot availability again in transaction
++		slot_available = queue._check_slot_availability(get_datetime(scheduled_time))
++		if not slot_available:
++			frappe.db.rollback()
++			frappe.throw(_("This time slot is no longer available"))
++		
++		# Create the entry
++		entry = frappe.new_doc("Appointment Queue Entry")
++		entry.queue = queue_name
++		entry.scheduled_time = scheduled_time
++		entry.customer_name = customer_name
++		entry.customer_email = kwargs.get("customer_email")
++		entry.customer_phone = kwargs.get("customer_phone")
++		entry.party_type = kwargs.get("party_type")
++		entry.party = kwargs.get("party")
++		entry.notes = kwargs.get("notes")
++		
++		# Set status based on queue settings
++		if queue.auto_confirm:
++			entry.status = "Confirmed"
++		else:
++			entry.status = "Pending"
++		
++		# Calculate queue position
++		entry.queue_position = _calculate_queue_position(queue_name, scheduled_time)
++		
++		entry.insert(ignore_permissions=True)
++		
++		frappe.db.commit()
++		return entry
++		
++	except Exception as e:
++		frappe.db.rollback()
++		raise e
++
++
++def _calculate_queue_position(queue_name, scheduled_time):
++	"""Calculate the position in the queue for a given slot"""
++	count = frappe.db.count("Appointment Queue Entry", {
++		"queue": queue_name,
++		"scheduled_time": scheduled_time,
++		"status": ["in", ["Pending", "Confirmed"]]
++	})
++	return count + 1
++
++
++def cancel_appointment_queue_entry(entry_name):
++	"""Cancel an appointment queue entry"""
++	entry = frappe.get_doc("Appointment Queue Entry", entry_name)
++	
++	if entry.status in ["Cancelled", "Completed"]:
++		frappe.throw(_("This appointment cannot be cancelled"))
++	
++	# Check cancellation policy
++	queue = frappe.get_doc("Appointment Queue", entry.queue)
++	time_diff = (get_datetime(entry.scheduled_time) - now_datetime()).total_seconds() / 60
++	
++	if queue.cancellation_allowed_before > 0 and time_diff < queue.cancellation_allowed_before:
++		frappe.throw(_("Cancellation is not allowed less than {0} minutes before the appointment").format(
++			queue.cancellation_allowed_before
++		))
++	
++	entry.status = "Cancelled"
++	entry.save(ignore_permissions=True)
++	return entry
++
++
++def get_appointment_status(entry_name):
++	"""Get the status of an appointment"""
++	entry = frappe.get_doc("Appointment Queue Entry", entry_name)
++	return {
++		"name": entry.name,
++		"status": entry.status,
++		"queue_position": entry.queue_position,
++		"scheduled_time": entry.scheduled_time,
++		"queue": entry.queue
++	}
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/__init__.py b/erpnext/crm/doctype/appointment_queue_entry/__init__.py
+new file mode 100644
+index 0000000000..18b9f13a78
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_entry/__init__.py
+@@ -0,0 +1,2 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json
+new file mode 100644
+index 0000000000..7a350a76b7
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.json
+@@ -0,0 +1,152 @@
++{
++ "actions": [],
++ "autoname": "format:AQE-{queue}-{####}",
++ "creation": "2024-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "queue",
++  "status",
++  "queue_position",
++  "appointment_section",
++  "scheduled_time",
++  "customer_name",
++  "customer_email",
++  "customer_phone",
++  "col_br_1",
++  "party_type",
++  "party",
++  "notes_section",
++  "notes"
++ ],
++ "fields": [
++  {
++   "fieldname": "appointment_section",
++   "fieldtype": "Section Break",
++   "label": "Appointment Details"
++  },
++  {
++   "fieldname": "queue",
++   "fieldtype": "Link",
++   "in_list_view": 1,
++   "label": "Queue",
++   "options": "Appointment Queue",
++   "reqd": 1
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "in_list_view": 1,
++   "label": "Status",
++   "options": "Pending\nConfirmed\nCancelled\nCompleted\nNo Show",
++   "reqd": 1,
++   "default": "Pending"
++  },
++  {
++   "fieldname": "queue_position",
++   "fieldtype": "Int",
++   "in_list_view": 1,
++   "label": "Queue Position",
++   "read_only": 1
++  },
++  {
++   "fieldname": "scheduled_time",
++   "fieldtype": "Datetime",
++   "in_list_view": 1,
++   "label": "Scheduled Time",
++   "reqd": 1
++  },
++  {
++   "fieldname": "customer_name",
++   "fieldtype": "Data",
++   "in_list_view": 1,
++   "label": "Customer Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "customer_email",
++   "fieldtype": "Data",
++   "label": "Email"
++  },
++  {
++   "fieldname": "customer_phone",
++   "fieldtype": "Data",
++   "label": "Phone"
++  },
++  {
++   "fieldname": "col_br_1",
++   "fieldtype": "Column Break"
++  },
++  {
++   "fieldname": "party_type",
++   "fieldtype": "Link",
++   "label": "Party Type",
++   "options": "DocType"
++  },
++  {
++   "fieldname": "party",
++   "fieldtype": "Dynamic Link",
++   "label": "Party",
++   "options": "party_type"
++  },
++  {
++   "fieldname": "notes_section",
++   "fieldtype": "Section Break",
++   "label": "Notes"
++  },
++  {
++   "fieldname": "notes",
++   "fieldtype": "Long Text",
++   "label": "Notes"
++  }
++ ],
++ "links": [],
++ "modified": "2024-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "CRM",
++ "name": "Appointment Queue Entry",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Sales Manager",
++   "share": 1,
++   "write": 1
++  },
++  {
++   "create": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "Sales User",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "quick_entry": 1,
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 1
++}
+diff --git a/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py
+new file mode 100644
+index 0000000000..68f9466d29
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_entry/appointment_queue_entry.py
+@@ -0,0 +1,52 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
++
++import frappe
++from frappe import _
++from frappe.model.document import Document
++from frappe.utils import now_datetime, get_datetime
++
++
++class AppointmentQueueEntry(Document):
++	def before_insert(self):
++		"""Validate before inserting"""
++		self._validate_queue_status()
++		self._validate_slot_availability()
++	
++	def _validate_queue_status(self):
++		"""Validate that the queue is active and enabled"""
++		queue = frappe.get_doc("Appointment Queue", self.queue)
++		if not queue.enable_queue:
++			frappe.throw(_("This queue is currently disabled"))
++		if queue.status != "Active":
++			frappe.throw(_("This queue is not active"))
++	
++	def _validate_slot_availability(self):
++		"""Validate that the time slot is still available"""
++		queue = frappe.get_doc("Appointment Queue", self.queue)
++		if not queue._check_slot_availability(get_datetime(self.scheduled_time)):
++			frappe.throw(_("This time slot is no longer available"))
++	
++	def on_update(self):
++		"""Update queue positions when status changes"""
++		if self.has_value_changed("status"):
++			self._recalculate_queue_positions()
++	
++	def _recalculate_queue_positions(self):
++		"""Recalculate positions for all entries in the same slot"""
++		entries = frappe.get_all("Appointment Queue Entry",
++			filters={
++				"queue": self.queue,
++				"scheduled_time": self.scheduled_time,
++				"status": ["in", ["Pending", "Confirmed"]]
++			},
++			order_by="creation asc"
++		)
++		
++		for idx, entry in enumerate(entries, 1):
++			frappe.db.set_value("Appointment Queue Entry", entry.name, "queue_position", idx)
++	
++	def cancel(self):
++		"""Cancel this appointment"""
++		from erpnext.crm.doctype.appointment_queue.appointment_queue import cancel_appointment_queue_entry
++		return cancel_appointment_queue_entry(self.name)
+diff --git a/erpnext/crm/doctype/appointment_queue_operation_hours/__init__.py b/erpnext/crm/doctype/appointment_queue_operation_hours/__init__.py
+new file mode 100644
+index 0000000000..18b9f13a78
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_operation_hours/__init__.py
+@@ -0,0 +1,2 @@
++# Copyright (c) 2024, Frappe Technologies Pvt. Ltd. and contributors
++# For license information, please see license.txt
+diff --git a/erpnext/crm/doctype/appointment_queue_operation_hours/appointment_queue_operation_hours.json b/erpnext/crm/doctype/appointment_queue_operation_hours/appointment_queue_operation_hours.json
+new file mode 100644
+index 0000000000..6a8b2b565b
+--- /dev/null
++++ b/erpnext/crm/doctype/appointment_queue_operation_hours/appointment_queue_operation_hours.json
+@@ -0,0 +1,48 @@
++{
++ "actions": [],
++ "creation": "2024-06-02 10:00:00.000000",
++ "doctype": "DocType",
++ "editable_grid": 1,
++ "engine": "InnoDB",
++ "field_order": [
++  "day_of_week",
++  "from_time",
++  "to_time"
++ ],
++ "fields": [
++  {
++   "fieldname": "day_of_week",
++   "fieldtype": "Select",
++   "in_list_view": 1,
++   "label": "Day of Week",
++   "options": "Monday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday",
++   "reqd": 1
++  },
++  {
++   "fieldname": "from_time",
++   "fieldtype": "Time",
++   "in_list_view": 1,
++   "label": "From Time",
++   "reqd": 1
++  },
++  {
++   "fieldname": "to_time",
++   "fieldtype": "Time",
++   "in_list_view": 1,
++   "label": "To Time",
++   "reqd": 1
++  }
++ ],
++ "istable": 1,
++ "links": [],
++ "modified": "2024-06-02 10:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "CRM",
++ "name": "Appointment Queue Operation Hours",
++ "owner": "Administrator",
++ "permissions": [],
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 0
++}

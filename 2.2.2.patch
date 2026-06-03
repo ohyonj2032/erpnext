@@ -1,4 +1,4 @@
-diff --git a/1.2.2.patch b/1.2.2.patch
+diff --git a/2.2.2.patch b/2.2.2.patch
 new file mode 100644
 index 0000000000..e69de29bb2
 diff --git a/erpnext/crm/doctype/appointment_queue/__init__.py b/erpnext/crm/doctype/appointment_queue/__init__.py

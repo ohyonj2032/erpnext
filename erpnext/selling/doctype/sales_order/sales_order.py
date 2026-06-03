@@ -505,17 +505,16 @@ class SalesOrder(SellingController):
 
 	def on_submit(self):
 		super().update_prevdoc_status()
-		self.check_credit_limit()
-		self.update_reserved_qty()
 		self.delete_removed_delivery_schedule_items()
 
 		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
 			self.doctype, self.company, self.base_grand_total, self
 		)
-		self.update_project()
-		self.update_prevdoc_status("submit")
-
-		self.update_blanket_order()
+		
+		# Delegate cross-domain orchestration to Application Service
+		from erpnext.selling.services.sales_order_orchestrator import SalesOrderOrchestrator
+		orchestrator = SalesOrderOrchestrator(self)
+		orchestrator.execute_on_submit()
 
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]

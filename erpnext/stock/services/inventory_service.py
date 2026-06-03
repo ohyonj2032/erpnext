@@ -8,7 +8,12 @@ import frappe
 from frappe import _
 from frappe.utils import flt, now
 
-from erpnext.models.inventory import apply_atomic_deduction, ensure_expected_version, snapshot_bin
+from erpnext.models.inventory import (
+    InventoryVersionMismatchError,
+    apply_atomic_deduction,
+    ensure_expected_version,
+    snapshot_bin,
+)
 
 
 class InventoryOperationError(frappe.ValidationError):
@@ -75,6 +80,17 @@ class InventoryService:
         result["is_idempotent"] = True
         frappe.cache().set(cls._idempotency_cache_key(transaction_id), result, expire=3600)
         return result
+
+    @classmethod
+    def _build_reconciliation_snapshot(cls, deduction_results, accounting_entries=None):
+        deduction_results = deduction_results or []
+        accounting_entries = accounting_entries or []
+        return {
+            "inventory_qty": sum(flt(row.get("deducted_qty") or row.get("qty") or 0) for row in deduction_results),
+            "inventory_rows": len(deduction_results),
+            "ledger_amount": sum(flt(entry.get("ledger_amount") or 0) for entry in accounting_entries),
+            "ledger_rows": len(accounting_entries),
+        }
 
     @classmethod
     def atomic_deduct_inventory(
@@ -145,6 +161,10 @@ class InventoryService:
                 "transaction_id": transaction_id,
                 "deductions": deduction_results,
                 "accounting_entries": accounting_entries or [],
+                "reconciliation": cls._build_reconciliation_snapshot(
+                    deduction_results,
+                    accounting_entries,
+                ),
                 "rolled_back": False,
                 "timestamp": now(),
             }
@@ -169,6 +189,7 @@ class InventoryService:
                 "transaction_id": transaction_id,
                 "deductions": deductions,
                 "accounting_entries": accounting_entries or [],
+                "reconciliation": cls._build_reconciliation_snapshot(deductions, accounting_entries),
                 "rolled_back": True,
                 "error": str(exc),
                 "timestamp": now(),
@@ -205,7 +226,7 @@ class InventoryService:
         current_version = int(bin_doc.get("version") or 0)
         try:
             ensure_expected_version(bin_doc, expected_version)
-        except ValueError:
+        except InventoryVersionMismatchError:
             raise InventoryOperationError(
                 _("Concurrent modification detected for Bin {0}. Expected version {1}, found {2}").format(
                     bin_name, expected_version, current_version

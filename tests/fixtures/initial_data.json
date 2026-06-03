@@ -7,7 +7,14 @@
     "status": "Draft",
     "signature": null,
     "last_result": null,
-    "status_change_log": []
+    "status_change_log": [],
+    "items": [
+      {
+        "qty": 5,
+        "rate": 150,
+        "warehouse": "_Test Warehouse - _TC"
+      }
+    ]
   },
   "inventory": {
     "doctype": "Bin",
@@ -16,9 +23,13 @@
     "reserved_qty": 0,
     "version": 0
   },
+  "expected_reconciliation": {
+    "inventory_qty": 5,
+    "ledger_amount": 750
+  },
   "assertions": {
-    "duplicate_submission": "same signature returns cached result",
-    "concurrency": "only one state transition mutates data, later calls converge idempotently",
-    "rollback": "order status and stock snapshot are restored and failure result is replayable"
+    "duplicate_submission": "same signature returns cached result and does not increment order version twice",
+    "concurrency": "only one state transition mutates order version, later calls converge idempotently",
+    "rollback": "order status, stock version and replay log snapshot are restored with reconciliation payload intact"
   }
 }

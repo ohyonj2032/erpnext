@@ -1,0 +1,476 @@
+diff --git a/erpnext/hooks.py b/erpnext/hooks.py
+--- a/erpnext/hooks.py
++++ b/erpnext/hooks.py
+@@ -407,6 +407,18 @@
+ 	"Integration Request": {
+ 		"validate": "erpnext.accounts.doctype.payment_request.payment_request.validate_payment"
+ 	},
++	"Sales Order": {
++		"on_submit": [
++			"erpnext.selling.services.sales_order_event_handlers.on_submit_notify",
++			"erpnext.selling.services.sales_order_event_handlers.on_submit_update_coupon",
++		],
++		"on_cancel": [
++			"erpnext.selling.services.sales_order_event_handlers.on_cancel_notify",
++			"erpnext.selling.services.sales_order_event_handlers.on_cancel_update_coupon",
++		],
++	},
+ }
+
+ # function should expect the variable and doc as arguments
+diff --git a/erpnext/selling/services/__init__.py b/erpnext/selling/services/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/selling/services/__init__.py
+@@ -0,0 +1,0 @@
+diff --git a/erpnext/selling/services/sales_order_event_handlers.py b/erpnext/selling/services/sales_order_event_handlers.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/selling/services/sales_order_event_handlers.py
+@@ -0,0 +1,28 @@
++import frappe
++
++
++def on_submit_notify(doc, method=None):
++	doc.notify_update()
++	from frappe.desk.notifications import clear_doctype_notifications
++
++	clear_doctype_notifications(doc)
++
++
++def on_submit_update_coupon(doc, method=None):
++	if doc.coupon_code:
++		from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
++
++		update_coupon_code_count(doc.coupon_code, "used")
++
++
++def on_cancel_notify(doc, method=None):
++	doc.notify_update()
++	from frappe.desk.notifications import clear_doctype_notifications
++
++	clear_doctype_notifications(doc)
++
++
++def on_cancel_update_coupon(doc, method=None):
++	if doc.coupon_code:
++		from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
++
++		update_coupon_code_count(doc.coupon_code, "cancelled")
+diff --git a/erpnext/selling/services/sales_order_submission_service.py b/erpnext/selling/services/sales_order_submission_service.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/selling/services/sales_order_submission_service.py
+@@ -0,0 +1,147 @@
++import frappe
++from frappe import _
++from frappe.utils import cint
++
++
++class SalesOrderSubmissionService:
++	STEP_DEFINITIONS = [
++		{"name": "credit_limit", "method": "_validate_credit_limit", "compensate": None},
++		{"name": "reserved_qty", "method": "_update_reserved_qty", "compensate": "_undo_reserved_qty"},
++		{"name": "prevdoc_status", "method": "_update_prevdoc_status", "compensate": "_undo_prevdoc_status"},
++		{"name": "blanket_order", "method": "_update_blanket_order", "compensate": "_undo_blanket_order"},
++		{"name": "project", "method": "_update_project", "compensate": "_undo_project"},
++		{"name": "inter_company", "method": "_handle_inter_company", "compensate": "_undo_inter_company"},
++		{"name": "stock_reservation", "method": "_reserve_stock", "compensate": "_undo_stock_reservation"},
++	]
++
++	def __init__(self, doc):
++		self.doc = doc
++		self._executed_steps = []
++
++	def execute(self):
++		for step in self.STEP_DEFINITIONS:
++			log = self._create_step_log(step["name"])
++			try:
++				getattr(self, step["method"])()
++				self._complete_step_log(log)
++				self._executed_steps.append(step["name"])
++			except Exception:
++				self._fail_step_log(log)
++				self._compensate_completed_steps(step["name"])
++				raise
++
++	def execute_cancel(self):
++		self._cancel_stock_reservation()
++		self._cancel_reserved_qty()
++		self._cancel_prevdoc_status()
++		self._cancel_blanket_order()
++		self._cancel_project()
++		self._cancel_inter_company()
++
++	def _validate_credit_limit(self):
++		from erpnext.selling.doctype.customer.customer import check_credit_limit
++
++		if not cint(
++			frappe.db.get_value(
++				"Customer Credit Limit",
++				{"parent": self.doc.customer, "parenttype": "Customer", "company": self.doc.company},
++				"bypass_credit_limit_check",
++			)
++		):
++			check_credit_limit(self.doc.customer, self.doc.company)
++
++	def _update_reserved_qty(self):
++		self.doc.update_reserved_qty()
++
++	def _update_prevdoc_status(self):
++		self.doc.update_prevdoc_status("submit")
++
++	def _update_blanket_order(self):
++		self.doc.update_blanket_order()
++
++	def _update_project(self):
++		self.doc.update_project()
++
++	def _handle_inter_company(self):
++		from erpnext.accounts.doctype.sales_invoice.sales_invoice import update_linked_doc
++
++		update_linked_doc(self.doc.doctype, self.doc.name, self.doc.inter_company_order_reference)
++
++	def _reserve_stock(self):
++		if self.doc.get("reserve_stock") and not self.doc.get("is_subcontracted"):
++			self.doc.create_stock_reservation_entries()
++
++	def _cancel_stock_reservation(self):
++		self.doc.cancel_stock_reservation_entries()
++
++	def _cancel_reserved_qty(self):
++		self.doc.update_reserved_qty()
++
++	def _cancel_prevdoc_status(self):
++		self.doc.update_prevdoc_status("cancel")
++
++	def _cancel_blanket_order(self):
++		self.doc.update_blanket_order()
++
++	def _cancel_project(self):
++		self.doc.update_project()
++
++	def _cancel_inter_company(self):
++		from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
++
++		unlink_inter_company_doc(self.doc.doctype, self.doc.name, self.doc.inter_company_order_reference)
++
++	def _compensate_completed_steps(self, failed_step):
++		for step in reversed(self.STEP_DEFINITIONS):
++			if step["name"] == failed_step:
++				break
++			if step["compensate"]:
++				try:
++					getattr(self, step["compensate"])()
++				except Exception:
++					frappe.log_error(
++						f"Compensation failed for step: {step['name']}",
++						"Sales Order Submission Compensation",
++					)
++
++	def _undo_reserved_qty(self):
++		self.doc.update_reserved_qty()
++
++	def _undo_prevdoc_status(self):
++		self.doc.update_prevdoc_status("cancel")
++
++	def _undo_blanket_order(self):
++		self.doc.update_blanket_order()
++
++	def _undo_project(self):
++		self.doc.update_project()
++
++	def _undo_inter_company(self):
++		from erpnext.accounts.doctype.sales_invoice.sales_invoice import unlink_inter_company_doc
++
++		unlink_inter_company_doc(self.doc.doctype, self.doc.name, self.doc.inter_company_order_reference)
++
++	def _undo_stock_reservation(self):
++		self.doc.cancel_stock_reservation_entries(notify=False)
++
++	def _create_step_log(self, step_name):
++		return frappe.get_doc(
++			{
++				"doctype": "Submission Step Log",
++				"reference_type": self.doc.doctype,
++				"reference_name": self.doc.name,
++				"step_name": step_name,
++				"status": "Pending",
++			}
++		).insert(ignore_permissions=True)
++
++	def _complete_step_log(self, log):
++		log.status = "Completed"
++		log.save(ignore_permissions=True)
++
++	def _fail_step_log(self, log):
++		log.status = "Failed"
++		log.save(ignore_permissions=True)
+diff --git a/erpnext/selling/services/credit_limit_service.py b/erpnext/selling/services/credit_limit_service.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/selling/services/credit_limit_service.py
+@@ -0,0 +1,20 @@
++import frappe
++from frappe.utils import cint
++
++
++class CreditLimitService:
++	@staticmethod
++	def check(customer, company, bypass_credit_limit_check=None):
++		from erpnext.selling.doctype.customer.customer import check_credit_limit
++
++		if bypass_credit_limit_check is None:
++			bypass_credit_limit_check = cint(
++				frappe.db.get_value(
++					"Customer Credit Limit",
++					{"parent": customer, "parenttype": "Customer", "company": company},
++					"bypass_credit_limit_check",
++				)
++			)
++
++		if not bypass_credit_limit_check:
++			check_credit_limit(customer, company)
+diff --git a/erpnext/stock/services/__init__.py b/erpnext/stock/services/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/stock/services/__init__.py
+@@ -0,0 +1,0 @@
+diff --git a/erpnext/stock/services/reserved_qty_service.py b/erpnext/stock/services/reserved_qty_service.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/stock/services/reserved_qty_service.py
+@@ -0,0 +1,36 @@
++import frappe
++from erpnext.stock.stock_balance import get_reserved_qty, update_bin_qty
++
++
++class ReservedQtyService:
++	@staticmethod
++	def update_for_sales_order(doc, so_item_rows=None):
++		item_wh_list = []
++
++		def _valid_for_reserve(item_code, warehouse):
++			if (
++				item_code
++				and warehouse
++				and [item_code, warehouse] not in item_wh_list
++				and frappe.get_cached_value("Item", item_code, "is_stock_item")
++			):
++				item_wh_list.append([item_code, warehouse])
++
++		for d in doc.get("items"):
++			if (not so_item_rows or d.name in so_item_rows) and not d.delivered_by_supplier:
++				if doc.has_product_bundle(d.item_code):
++					for p in doc.get("packed_items"):
++						if p.parent_detail_docname == d.name and p.parent_item == d.item_code:
++							_valid_for_reserve(p.item_code, p.warehouse)
++				else:
++					_valid_for_reserve(d.item_code, d.warehouse)
++
++		for item_code, warehouse in item_wh_list:
++			update_bin_qty(item_code, warehouse, {"reserved_qty": get_reserved_qty(item_code, warehouse)})
++
++	@staticmethod
++	def update_for_sales_order_cancel(doc, so_item_rows=None):
++		ReservedQtyService.update_for_sales_order(doc, so_item_rows)
+diff --git a/erpnext/stock/services/stock_reservation_service.py b/erpnext/stock/services/stock_reservation_service.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/stock/services/stock_reservation_service.py
+@@ -0,0 +1,13 @@
++import frappe
++
++
++class StockReservationService:
++	@staticmethod
++	def create_for_sales_order(doc, items_details=None, from_voucher_type=None, notify=True):
++		from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
++			create_stock_reservation_entries_for_so_items,
++		)
++
++		return create_stock_reservation_entries_for_so_items(
++			sales_order=doc, items_details=items_details,
++			from_voucher_type=from_voucher_type, notify=notify,
++		)
+diff --git a/erpnext/utilities/doctype/submission_step_log/submission_step_log.json b/erpnext/utilities/doctype/submission_step_log/submission_step_log.json
+new file mode 100644
+--- /dev/null
++++ b/erpnext/utilities/doctype/submission_step_log/submission_step_log.json
+@@ -0,0 +1,79 @@
++{
++ "actions": [],
++ "autoname": "hash",
++ "creation": "2025-01-01 00:00:00.000000",
++ "doctype": "DocType",
++ "engine": "InnoDB",
++ "field_order": [
++  "reference_type",
++  "reference_name",
++  "step_name",
++  "status",
++  "compensation_method",
++  "error_detail"
++ ],
++ "fields": [
++  {
++   "fieldname": "reference_type",
++   "fieldtype": "Link",
++   "label": "Reference Type",
++   "options": "DocType",
++   "reqd": 1
++  },
++  {
++   "fieldname": "reference_name",
++   "fieldtype": "Data",
++   "label": "Reference Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "step_name",
++   "fieldtype": "Data",
++   "label": "Step Name",
++   "reqd": 1
++  },
++  {
++   "fieldname": "status",
++   "fieldtype": "Select",
++   "label": "Status",
++   "options": "Pending\nCompleted\nCompensated\nFailed",
++   "default": "Pending",
++   "reqd": 1
++  },
++  {
++   "fieldname": "compensation_method",
++   "fieldtype": "Data",
++   "label": "Compensation Method"
++  },
++  {
++   "fieldname": "error_detail",
++   "fieldtype": "Small Text",
++   "label": "Error Detail"
++  }
++ ],
++ "index_web_pages_for_search": 0,
++ "is_submittable": 0,
++ "links": [],
++ "modified": "2025-01-01 00:00:00.000000",
++ "modified_by": "Administrator",
++ "module": "Utilities",
++ "name": "Submission Step Log",
++ "naming_rule": "Random",
++ "owner": "Administrator",
++ "permissions": [
++  {
++   "create": 1,
++   "delete": 1,
++   "email": 1,
++   "export": 1,
++   "print": 1,
++   "read": 1,
++   "report": 1,
++   "role": "System Manager",
++   "share": 1,
++   "write": 1
++  }
++ ],
++ "sort_field": "creation",
++ "sort_order": "DESC",
++ "states": [],
++ "track_changes": 0
++}
+diff --git a/erpnext/utilities/doctype/submission_step_log/submission_step_log.py b/erpnext/utilities/doctype/submission_step_log/submission_step_log.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/utilities/doctype/submission_step_log/submission_step_log.py
+@@ -0,0 +1,10 @@
++import frappe
++from frappe.model.document import Document
++
++
++class SubmissionStepLog(Document):
++	pass
+diff --git a/erpnext/utilities/doctype/submission_step_log/__init__.py b/erpnext/utilities/doctype/submission_step_log/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/erpnext/utilities/doctype/submission_step_log/__init__.py
+@@ -0,0 +1,0 @@
+diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -508,23 +508,11 @@ class SalesOrder(SellingController):
+ 	def on_submit(self):
+ 		super().update_prevdoc_status()
+-		self.check_credit_limit()
+-		self.update_reserved_qty()
+ 		self.delete_removed_delivery_schedule_items()
+
+ 		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
+ 			self.doctype, self.company, self.base_grand_total, self
+ 		)
+-		self.update_project()
+-		self.update_prevdoc_status("submit")
+-
+-		self.update_blanket_order()
+-
+-		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
+-		if self.coupon_code:
+-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+-
+-			update_coupon_code_count(self.coupon_code, "used")
+-
+-		if self.get("reserve_stock") and not self.get("is_subcontracted"):
+-			self.create_stock_reservation_entries()
++		from erpnext.selling.services.sales_order_submission_service import SalesOrderSubmissionService
++
++		SalesOrderSubmissionService(self).execute()
+
+ 	def delete_removed_delivery_schedule_items(self):
+ 		items = [d.name for d in self.get("items")]
+@@ -538,37 +526,13 @@ class SalesOrder(SellingController):
+ 	def on_cancel(self):
+ 		self.ignore_linked_doctypes = (
+ 			"GL Entry",
+@@ -559,30 +527,13 @@ class SalesOrder(SellingController):
+ 		self.delete_delivery_schedule_items()
+ 		self.check_nextdoc_docstatus()
+-		self.update_reserved_qty()
+-		self.update_project()
+-		self.update_prevdoc_status("cancel")
+-
+ 		self.db_set("status", "Cancelled")
+
+-		self.update_blanket_order()
+-		self.cancel_stock_reservation_entries()
+-
+-		unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
+-		if self.coupon_code:
+-			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
+-
+-			update_coupon_code_count(self.coupon_code, "cancelled")
++		from erpnext.selling.services.sales_order_submission_service import SalesOrderSubmissionService
++
++		SalesOrderSubmissionService(self).execute_cancel()
+
+ 	def update_project(self):
+ 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":
+@@ -637,7 +581,10 @@ class SalesOrder(SellingController):
+
+ 	def update_reserved_qty(self, so_item_rows=None):
+ 		"""update requested qty (before ordered_qty is updated)"""
+-		item_wh_list = []
++		from erpnext.stock.services.reserved_qty_service import ReservedQtyService
++
++		ReservedQtyService.update_for_sales_order(self, so_item_rows)
++		return
+
+ 		def _valid_for_reserve(item_code, warehouse):
+ 			if (
+@@ -610,8 +557,6 @@ class SalesOrder(SellingController):
+ 		self.update_reserved_qty()
+ 		self.update_subcontracting_order_status()
+-		self.notify_update()
+-		clear_doctype_notifications(self)
+ 		self.update_blanket_order()
+
+ 	def update_subcontracting_order_status(self):

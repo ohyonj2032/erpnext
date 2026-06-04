@@ -1,0 +1,79 @@
+--- /dev/null
++++ b/erpnext/crm/doctype/reservation_queue/reservation_queue.py
+@@ -0,0 +1,76 @@
++import frappe
++from frappe.model.document import Document
++from frappe import _
++
++class ReservationQueue(Document):
++    def before_save(self):
++        # 拦截状态变更，通过状态机分发逻辑
++        if not self.is_new() and self.has_value_changed("status"):
++            old_status = self.get_doc_before_save().status
++            self.handle_status_transition(old_status, self.status)
++
++    def handle_status_transition(self, old_status, new_status):
++        """
++        【扩展点设计】状态机映射：避免复杂的 if-else 嵌套。
++        后续新增诸如 "黑名单", "VIP插队" 等规则，只需在此字典中增加映射和对应的 Handler 函数。
++        """
++        transition_map = {
++            ("Pending", "Reserved"): self.execute_reservation,
++            ("Reserved", "Cancelled"): self.execute_cancellation,       # 预约取消
++            ("Reserved", "Timeout"): self.execute_timeout_release,      # 超时释放
++            ("Reserved", "Rescheduled"): self.execute_reschedule,       # 人工改签
++        }
++        
++        handler = transition_map.get((old_status, new_status))
++        if handler:
++            handler()
++        else:
++            frappe.throw(_("Invalid state transition from {0} to {1}").format(old_status, new_status))
++
++    def execute_reservation(self):
++        """执行锁定：调用底层核心单据"""
++        if self.item_code and self.qty:
++            # 事务边界明确：调用 ERPNext 原生的 Stock Reservation Entry 锁定库存
++            sre = frappe.get_doc({
++                "doctype": "Stock Reservation Entry",
++                "item_code": self.item_code,
++                "warehouse": self.warehouse,
++                "reserved_qty": self.qty,
++                "reservation_based_on": "Qty",
++                "voucher_type": self.doctype,
++                "voucher_no": self.name
++            })
++            sre.insert(ignore_permissions=True)
++            sre.submit()
++            self.db_set("stock_reservation_entry", sre.name)
++            self.add_comment("Info", _("Inventory successfully reserved."))
++
++    def execute_cancellation(self):
++        """预约取消：释放资源，不侵入核心逻辑"""
++        self.release_stock_and_orders()
++        self.add_comment("Warning", _("Reservation cancelled by user."))
++
++    def execute_timeout_release(self):
++        """超时释放：可供后台定时任务 (Scheduler) 调用"""
++        self.release_stock_and_orders()
++        self.add_comment("Warning", _("Reservation released due to timeout."))
++        # 可在此处触发广播事件，通知其他模块（如触发黑名单积分扣减）
++        frappe.get_doc("User", self.customer).run_method("punish_for_timeout")
++
++    def execute_reschedule(self):
++        """人工改签：组合现有策略，先释放后重新分配"""
++        self.release_stock_and_orders()
++        # 清空原有预留，基于新时间重新执行锁定
++        self.execute_reservation()
++        self.add_comment("Info", _("Reservation rescheduled to {0}.").format(self.scheduled_time))
++
++    def release_stock_and_orders(self):
++        """
++        公共底层调用逻辑：取消库存预留单。
++        保持事务一致性，底层的 Cancel 方法会处理所有的会计与库存冲销。
++        """
++        if self.stock_reservation_entry:
++            sre_doc = frappe.get_doc("Stock Reservation Entry", self.stock_reservation_entry)
++            if sre_doc.docstatus == 1:
++                sre_doc.cancel()
++            self.db_set("stock_reservation_entry", None)

@@ -1,1 +1,1 @@
-# My ERPNext Project
+# ERPNext

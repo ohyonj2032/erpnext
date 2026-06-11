@@ -504,17 +504,20 @@ class SalesOrder(SellingController):
 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
 
 	def on_submit(self):
-		super().update_prevdoc_status()
+		# Document level basic validations & cleanup (Local to Sales Order)
 		self.delete_removed_delivery_schedule_items()
 
 		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
 			self.doctype, self.company, self.base_grand_total, self
 		)
 		
-		# Delegate cross-domain orchestration to Application Service
+		# Delegate cross-domain orchestration to Application Service Layer
 		from erpnext.selling.services.sales_order_orchestrator import SalesOrderOrchestrator
 		orchestrator = SalesOrderOrchestrator(self)
 		orchestrator.execute_on_submit()
+		
+		# Notification logic (if any) should be moved to hooks.py doc_events (Event Handlers)
+		# rather than being called synchronously here.
 
 	def delete_removed_delivery_schedule_items(self):
 		items = [d.name for d in self.get("items")]

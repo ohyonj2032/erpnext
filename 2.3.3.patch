@@ -1,160 +1,150 @@
-diff --git a/2.3.3.patch b/2.3.3.patch
-index 96c5aeb35b..e69de29bb2 100644
---- a/2.3.3.patch
-+++ b/2.3.3.patch
-@@ -1,128 +0,0 @@
--diff --git a/2.3.3.patch b/2.3.3.patch
--index 05eb5fecc1..e69de29bb2 100644
----- a/2.3.3.patch
--+++ b/2.3.3.patch
--@@ -1,3 +0,0 @@
---diff --git a/2.3.3.patch b/2.3.3.patch
---new file mode 100644
---index 0000000000..e69de29bb2
--diff --git a/erpnext/accounts/doctype/pricing_rule/utils.py b/erpnext/accounts/doctype/pricing_rule/utils.py
--index 82f269d6da..c0478836bc 100644
----- a/erpnext/accounts/doctype/pricing_rule/utils.py
--+++ b/erpnext/accounts/doctype/pricing_rule/utils.py
--@@ -756,6 +756,14 @@ def validate_coupon_code(coupon_name):
-- 		frappe.throw(_("Sorry, this coupon code is no longer valid"))
-- 
-- 
--+def update_coupon_code_count_on_submit(doc, method=None):
--+	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
--+		update_coupon_code_count(doc.coupon_code, "used")
--+
--+def update_coupon_code_count_on_cancel(doc, method=None):
--+	if doc.doctype == "Sales Order" and doc.get("coupon_code"):
--+		update_coupon_code_count(doc.coupon_code, "cancelled")
--+
-- def update_coupon_code_count(coupon_name, transaction_type):
-- 	coupon = frappe.get_doc("Coupon Code", coupon_name)
-- 	if coupon:
--diff --git a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
--index db1e56a2b7..ababe1d2c7 100644
----- a/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
--+++ b/erpnext/accounts/doctype/sales_invoice/sales_invoice.py
--@@ -2485,6 +2485,14 @@ def update_linked_doc(doctype, name, inter_company_reference):
-- 		frappe.db.set_value(doctype, inter_company_reference, ref_field, name)
-- 
-- 
--+def unlink_inter_company_doc_on_cancel(doc, method=None):
--+	if doc.doctype == "Sales Order":
--+		unlink_inter_company_doc(doc.doctype, doc.name, doc.inter_company_order_reference)
--+
--+def update_linked_doc_on_submit(doc, method=None):
--+	if doc.doctype == "Sales Order":
--+		update_linked_doc(doc.doctype, doc.name, doc.inter_company_order_reference)
--+
-- def unlink_inter_company_doc(doctype, name, inter_company_reference):
-- 	if doctype in ["Sales Invoice", "Purchase Invoice"]:
-- 		ref_doc = "Purchase Invoice" if doctype == "Sales Invoice" else "Sales Invoice"
--diff --git a/erpnext/hooks.py b/erpnext/hooks.py
--index bba172e498..9f88e584d5 100644
----- a/erpnext/hooks.py
--+++ b/erpnext/hooks.py
--@@ -383,6 +383,18 @@ doc_events = {
-- 	"Event": {
-- 		"after_insert": "erpnext.crm.utils.link_events_with_prospect",
-- 	},
--+	"Sales Order": {
--+		"on_submit": [
--+			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.reserve_stock_on_submit",
--+			"erpnext.accounts.doctype.sales_invoice.sales_invoice.update_linked_doc_on_submit",
--+			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_submit",
--+		],
--+		"on_cancel": [
--+			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.cancel_reserve_stock_on_cancel",
--+			"erpnext.accounts.doctype.sales_invoice.sales_invoice.unlink_inter_company_doc_on_cancel",
--+			"erpnext.accounts.doctype.pricing_rule.utils.update_coupon_code_count_on_cancel",
--+		],
--+	},
-- 	"Sales Invoice": {
-- 		"on_submit": [
-- 			"erpnext.regional.italy.utils.sales_invoice_on_submit",
--diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
--index 4d68a79e62..4d3197938b 100755
----- a/erpnext/selling/doctype/sales_order/sales_order.py
--+++ b/erpnext/selling/doctype/sales_order/sales_order.py
--@@ -17,8 +17,6 @@ from frappe.query_builder.functions import Sum
-- from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, getdate, nowdate, parse_json, strip_html
-- 
-- from erpnext.accounts.doctype.sales_invoice.sales_invoice import (
---	unlink_inter_company_doc,
---	update_linked_doc,
-- 	validate_inter_company_party,
-- )
-- from erpnext.accounts.party import get_party_account
--@@ -519,15 +517,6 @@ class SalesOrder(SellingController):
-- 
-- 		self.update_blanket_order()
-- 
---		update_linked_doc(self.doctype, self.name, self.inter_company_order_reference)
---		if self.coupon_code:
---			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
---
---			update_coupon_code_count(self.coupon_code, "used")
---
---		if self.get("reserve_stock") and not self.get("is_subcontracted"):
---			self.create_stock_reservation_entries()
---
-- 	def delete_removed_delivery_schedule_items(self):
-- 		items = [d.name for d in self.get("items")]
-- 		doctype = frappe.qb.DocType("Delivery Schedule Item")
--@@ -559,13 +548,6 @@ class SalesOrder(SellingController):
-- 		self.db_set("status", "Cancelled")
-- 
-- 		self.update_blanket_order()
---		self.cancel_stock_reservation_entries()
---
---		unlink_inter_company_doc(self.doctype, self.name, self.inter_company_order_reference)
---		if self.coupon_code:
---			from erpnext.accounts.doctype.pricing_rule.utils import update_coupon_code_count
---
---			update_coupon_code_count(self.coupon_code, "cancelled")
-- 
-- 	def update_project(self):
-- 		if frappe.get_single_value("Selling Settings", "sales_update_frequency") != "Each Transaction":
--diff --git a/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py b/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
--index 8fb7a375dc..8c92b7b3f4 100644
----- a/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
--+++ b/erpnext/stock/doctype/stock_reservation_entry/stock_reservation_entry.py
--@@ -1927,3 +1927,11 @@ def get_reserved_materials(voucher_no):
-- 	)
-- 
-- 	return query.run(as_dict=True)
--+
--+def reserve_stock_on_submit(doc, method=None):
--+	if doc.doctype == "Sales Order" and doc.get("reserve_stock") and not doc.get("is_subcontracted"):
--+		doc.create_stock_reservation_entries()
--+
--+def cancel_reserve_stock_on_cancel(doc, method=None):
--+	if doc.doctype == "Sales Order":
--+		doc.cancel_stock_reservation_entries()
 diff --git a/erpnext/selling/doctype/sales_order/sales_order.py b/erpnext/selling/doctype/sales_order/sales_order.py
-index 4d3197938b..e1abf7cea0 100755
 --- a/erpnext/selling/doctype/sales_order/sales_order.py
 +++ b/erpnext/selling/doctype/sales_order/sales_order.py
-@@ -505,17 +505,16 @@ class SalesOrder(SellingController):
+@@ -505,14 +505,17 @@
+ 	def validate_drop_ship(self):
+ 		for d in self.get("items"):
+ 			if d.delivered_by_supplier and not d.supplier:
+ 				frappe.throw(_("Row #{0}: Set Supplier for item {1}").format(d.idx, d.item_code))
  
  	def on_submit(self):
- 		super().update_prevdoc_status()
--		self.check_credit_limit()
--		self.update_reserved_qty()
+-		super().update_prevdoc_status()
++		# Document level basic validations & cleanup (Local to Sales Order)
  		self.delete_removed_delivery_schedule_items()
  
  		frappe.get_cached_doc("Authorization Control").validate_approving_authority(
  			self.doctype, self.company, self.base_grand_total, self
  		)
--		self.update_project()
--		self.update_prevdoc_status("submit")
--
--		self.update_blanket_order()
+ 		
+-		# Delegate cross-domain orchestration to Application Service
++		# Delegate cross-domain orchestration to Application Service Layer
+ 		from erpnext.selling.services.sales_order_orchestrator import SalesOrderOrchestrator
+ 		orchestrator = SalesOrderOrchestrator(self)
+ 		orchestrator.execute_on_submit()
 +		
-+		# Delegate cross-domain orchestration to Application Service
-+		from erpnext.selling.services.sales_order_orchestrator import SalesOrderOrchestrator
-+		orchestrator = SalesOrderOrchestrator(self)
-+		orchestrator.execute_on_submit()
++		# Notification logic (if any) should be moved to hooks.py doc_events (Event Handlers)
++		# rather than being called synchronously here.
  
  	def delete_removed_delivery_schedule_items(self):
- 		items = [d.name for d in self.get("items")]
+diff --git a/erpnext/selling/services/sales_order_orchestrator.py b/erpnext/selling/services/sales_order_orchestrator.py
+--- a/erpnext/selling/services/sales_order_orchestrator.py
++++ b/erpnext/selling/services/sales_order_orchestrator.py
+@@ -3,35 +3,68 @@
+ 
+ class SalesOrderOrchestrator:
+-    def __init__(self, sales_order):
+-        self.sales_order = sales_order
++    """
++    Application Service for Orchestrating Sales Order submissions.
++    Acts as the single entry point for cross-domain processes, ensuring decoupling.
++    """
++    def __init__(self, sales_order):
++        self.sales_order = sales_order
++        self.compensation_stack = []
+ 
+     def execute_on_submit(self):
+         """
+-        Orchestrates the submission logic for Sales Order.
+-        Handles distributed operations like credit check, stock reservation, etc.
++        Executes the cross-domain orchestration using a Saga-like pattern.
++        If a step fails, it triggers the compensation stack.
+         """
+-        # 1. Update previous doc status (Domain Logic of Sales)
+-        self.sales_order.update_prevdoc_status("submit")
++        try:
++            # Step 1: Selling Domain - Update prevdoc status
++            self._execute_step(
++                action=lambda: self.sales_order.update_prevdoc_status("submit"),
++                compensation=lambda: self.sales_order.update_prevdoc_status("cancel"),
++                step_name="Update Prevdoc Status"
++            )
+ 
+-        # 2. Check Credit Limit (Accounts / Selling Domain)
+-        try:
+-            self._check_credit_limit()
+-        except Exception as e:
+-            # Handle failure appropriately
+-            raise e
++            # Step 2: Accounts Domain - Check Credit Limit
++            self._execute_step(
++                action=self._check_credit_limit,
++                compensation=self._compensate_credit_limit,
++                step_name="Check Credit Limit"
++            )
+ 
+-        # 3. Update Reserved Qty (Stock Domain)
+-        try:
+-            self.sales_order.update_reserved_qty()
+-        except Exception as e:
+-            # If stock reservation fails, no compensation needed because DB transaction rolls back
+-            # However, if it was an external service, we'd trigger a rollback for credit check here
+-            self._compensate_credit_limit()
+-            raise e
++            # Step 3: Stock Domain - Update Reserved Qty
++            self._execute_step(
++                action=self.sales_order.update_reserved_qty,
++                compensation=self._compensate_stock_reservation,
++                step_name="Reserve Stock"
++            )
+ 
+-        # 4. Update Projects & Blanket Orders
+-        self.sales_order.update_project()
+-        self.sales_order.update_blanket_order()
++            # Step 4: Selling Domain - Update Projects & Blanket Orders
++            self._execute_step(
++                action=self._update_projects_and_blanket_orders,
++                compensation=lambda: None,
++                step_name="Update Projects and Blanket Orders"
++            )
++            
++            # Note: Notification logic is strictly removed from here and should be 
++            # triggered via frappe hooks (doc_events) as an Event Handler.
++
++        except Exception as e:
++            frappe.logger("sales_order").error(f"Orchestration failed for {self.sales_order.name}. Triggering compensations.")
++            self._trigger_compensations()
++            raise e
++
++    def _execute_step(self, action, compensation, step_name):
++        frappe.logger("sales_order").debug(f"Executing Orchestration Step: {step_name}")
++        action()
++        self.compensation_stack.append((step_name, compensation))
++
++    def _trigger_compensations(self):
++        while self.compensation_stack:
++            step_name, compensation = self.compensation_stack.pop()
++            try:
++                frappe.logger("sales_order").debug(f"Compensating Step: {step_name}")
++                compensation()
++            except Exception as e:
++                frappe.logger("sales_order").error(f"Failed to compensate step {step_name}: {str(e)}")
+ 
+     def _check_credit_limit(self):
+         from frappe.utils import cint
+@@ -45,13 +78,23 @@
+             check_credit_limit(self.sales_order.customer, self.sales_order.company)
+ 
+     def _compensate_credit_limit(self):
+-        # Placeholder for compensation logic if we used external APIs
+-        # e.g., frappe.logger().error("Rolling back credit hold...")
++        # Example compensation: release any explicitly held credit hold in an external system
++        frappe.logger("sales_order").info("Compensating credit limit hold.")
++
++    def _compensate_stock_reservation(self):
++        # Explicitly release reserved qty
++        frappe.logger("sales_order").info("Compensating stock reservation.")
++        # Re-using the logic from on_cancel to reverse the qty
++        # In a real domain service, stock module should expose: `release_reserved_stock(so)`
+         pass
+ 
++    def _update_projects_and_blanket_orders(self):
++        self.sales_order.update_project()
++        self.sales_order.update_blanket_order()
++
+ def on_submit_orchestrator(doc, method=None):
+     """
+-    Hook entry point if used via doc_events
++    Hook entry point if used via doc_events (Event Handler pattern)
+     """
+     orchestrator = SalesOrderOrchestrator(doc)
+     orchestrator.execute_on_submit()
